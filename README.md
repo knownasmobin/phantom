@@ -388,29 +388,98 @@ iptables -A OUTPUT -p tcp --tcp-flags RST RST -j DROP
 
 ## Installation
 
+### Quick Start (Recommended)
+
+The easiest way to get running. No Rust toolchain needed — pre-built binaries are downloaded automatically from GitHub releases.
+
+```bash
+git clone https://github.com/knownasmobin/phantom.git
+cd phantom
+chmod +x run.sh
+```
+
+**On your server (VPS outside Iran):**
+```bash
+./run.sh setup server
+```
+
+**On your client (inside Iran):**
+```bash
+./run.sh setup client
+```
+
+The setup wizard will walk you through choosing a transport mode, SNI, and a shared key. It downloads the right binary for your platform automatically.
+
+### Download Binary Manually
+
+```bash
+# Download latest release for your platform
+curl -LO https://github.com/knownasmobin/phantom/releases/latest/download/phantom-linux-amd64.tar.gz
+tar xzf phantom-linux-amd64.tar.gz
+chmod +x phantom-client phantom-server
+
+# Available platforms:
+#   phantom-linux-amd64.tar.gz       (x86_64, glibc)
+#   phantom-linux-amd64-musl.tar.gz  (x86_64, static/musl)
+#   phantom-linux-arm64.tar.gz       (aarch64)
+#   phantom-linux-armv7.tar.gz       (ARMv7)
+```
+
 ### From Source
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-org/phantom.git
+git clone https://github.com/knownasmobin/phantom.git
 cd phantom
-
-# Build release binaries
 cargo build --release
 
 # Binaries will be in target/release/
 ls target/release/phantom-client target/release/phantom-server
 ```
 
-### Quick Install
+### Docker
 
 ```bash
-cargo install --path .
+docker pull ghcr.io/knownasmobin/phantom:latest
+
+# Run server
+docker run -d --name phantom-server \
+  --cap-add=NET_ADMIN --cap-add=NET_RAW \
+  -p 443:443 -v ./data:/etc/phantom \
+  ghcr.io/knownasmobin/phantom:latest
 ```
 
 ## Usage
 
-### Server Setup
+### Using run.sh (Recommended)
+
+The `run.sh` script handles setup, downloading, running, and testing — no manual configuration needed.
+
+```bash
+# Step 1: On server — interactive setup (picks transport, SNI, generates keys)
+./run.sh setup server
+#   -> Prints connection info (IP, port, key, PSK) to share with client
+
+# Step 2: On client — enter the connection info from step 1
+./run.sh setup client
+
+# Step 3: Start both sides
+./run.sh start server    # on the server
+./run.sh start client    # on the client
+
+# Step 4: Verify the tunnel works
+./run.sh check
+#   -> Tests SOCKS5 proxy, shows exit IP, compares with direct IP
+
+# Other commands
+./run.sh status          # show setup & version info
+./run.sh update          # download latest release
+./run.sh build           # build from source instead
+./run.sh help            # full command list
+```
+
+### Manual Setup
+
+#### Server
 
 1. **Generate server keys and start listening:**
 
@@ -437,7 +506,7 @@ sudo ./phantom-server --config server.json --listen 0.0.0.0:443
 ./phantom-server --print-key --key-file phantom-server.key
 ```
 
-### Client Setup
+#### Client
 
 1. **Connect to server:**
 
@@ -961,7 +1030,13 @@ iptables -L OUTPUT -n | grep RST
 ```
 phantom/
 ├── Cargo.toml                 # Project configuration
+├── Cargo.lock                 # Dependency lockfile
 ├── README.md                  # This file
+├── run.sh                     # Setup & run script (start here)
+├── Dockerfile                 # Multi-stage Docker build
+├── .github/workflows/
+│   ├── ci.yml                 # Lint + test (runs on tags)
+│   └── release.yml            # Build + publish (runs on tags)
 ├── src/
 │   ├── lib.rs                 # Library root
 │   ├── error.rs               # Error types
