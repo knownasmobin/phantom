@@ -2,3 +2,29 @@
 /.dist
 /Bypassing Iran's GFW_ Tunneling Ideas.md
 nul
+
+# Rust build artifacts
+/target/
+**/*.rs.bk
+*.pdb
+
+# Release artifacts
+*.tar.gz
+*.zip
+SHA256SUMS.txt
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+*.key
+*.pem

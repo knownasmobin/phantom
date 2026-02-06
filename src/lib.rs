@@ -6,7 +6,8 @@
 //! - **Raw Socket Control**: Kernel bypass for precise packet manipulation
 //! - **Geneva Engine**: State machine desynchronization attacks
 //! - **Domestic Mimicry**: TLS fingerprint spoofing (Rubika/Eitaa)
-//! - **Transport Agility**: Dynamic switching between TCP/Protocol 115/ICMP
+//! - **Transport Agility**: Dynamic switching between 6 transport modes:
+//!   - FakeTCP, Protocol 115, ICMP, DNS, QUIC Masquerade, GRE
 //! - **FEC**: Forward Error Correction to survive packet loss/throttling
 
 #![allow(dead_code)]

@@ -38,14 +38,23 @@ Iran's GFW operates on a "default-deny" model for unknown protocols but has seve
 | FakeTCP | Kernel bypass prevents RST injection from affecting connections |
 | Protocol 115 | L2TPv3 infrastructure protocol not inspected |
 | ICMP | Diagnostic necessity - blocking would break network troubleshooting |
+| DNS Tunnel | DNS is required for all internet access - never blocked |
+| QUIC Masquerade | UDP:443 traffic mimics HTTP/3 - blocking breaks YouTube/Google |
+| GRE | Infrastructure protocol for enterprise VPN trunks |
 | Domestic App Fronting | SNI matching whitelisted Iranian services bypasses TLS inspection |
 
 ## Features
 
-- **Multiple Transport Modes**
+- **Multiple Transport Modes (9 modes, 3 novel inventions)**
   - FakeTCP: Raw socket TCP-like protocol with kernel bypass
   - Protocol 115: L2TPv3-style tunneling through unmonitored IP protocol
   - ICMP: Echo request/reply tunneling
+  - DNS Tunnel: Data encoded in DNS queries/TXT responses (always whitelisted)
+  - QUIC Masquerade: UDP:443 with QUIC Initial packet mimicry (no root needed)
+  - GRE: Generic Routing Encapsulation (IP Protocol 47, enterprise blind spot)
+  - **HTTP Smuggle** (novel): CL/TE desync exploiting DPI parsing bugs + Iran's case-sensitive Host matching
+  - **Video Parasite** (novel): Covert data in HLS/MPEG-TS packets - first implementation ever
+  - **Proto Morph** (novel): Session-unique wire format derived from shared key - no fingerprint possible
 
 - **DPI Evasion (Geneva Engine)**
   - TCP Segmentation: Splits packets to evade signature matching
@@ -91,18 +100,29 @@ Iran's GFW operates on a "default-deny" model for unknown protocols but has seve
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────────┐
-│                     Transport Layer                              │
+│                Transport Layer (9 modes, 3 novel)                │
 │  ┌───────────┐  ┌───────────────┐  ┌─────────────────────────┐  │
 │  │  FakeTCP  │  │  Protocol 115 │  │        ICMP             │  │
 │  │ (Raw Sock)│  │  (L2TPv3-like)│  │   (Echo Tunnel)         │  │
 │  └───────────┘  └───────────────┘  └─────────────────────────┘  │
+│  ┌───────────┐  ┌───────────────┐  ┌─────────────────────────┐  │
+│  │    DNS    │  │ QUIC Masq     │  │        GRE              │  │
+│  │ (UDP:53)  │  │  (UDP:443)    │  │   (IP Proto 47)         │  │
+│  └───────────┘  └───────────────┘  └─────────────────────────┘  │
+│  ╔═══════════╗  ╔═══════════════╗  ╔═════════════════════════╗  │
+│  ║  HTTP     ║  ║ Video         ║  ║    Protocol Entropy     ║  │
+│  ║ Smuggle*  ║  ║ Parasite*     ║  ║    Morphing*            ║  │
+│  ╚═══════════╝  ╚═══════════════╝  ╚═════════════════════════╝  │
+│  * = Novel Phantom inventions                                    │
 └─────────────────────────────────────────────────────────────────┘
                               │
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Raw IP Sockets                               │
-│                  (Kernel Bypass)                                 │
-└─────────────────────────────────────────────────────────────────┘
+                    ┌─────────┴─────────┐
+                    ▼                   ▼
+┌──────────────────────────┐ ┌────────────────────────────────────┐
+│     Raw IP Sockets       │ │        Standard UDP Sockets        │
+│ (FakeTCP, Proto115,      │ │  (DNS, QUIC Masq - no root)       │
+│  ICMP, GRE - root req.)  │ │                                    │
+└──────────────────────────┘ └────────────────────────────────────┘
 ```
 
 ## Design Decisions
@@ -269,10 +289,21 @@ TUN/TAP was rejected because the kernel TCP stack would interfere with our FakeT
 |--------|-----------|
 | **Why 115?** | L2TPv3 uses IP protocol 115, designed for ISP infrastructure |
 | **Why not UDP/TCP?** | Heavily inspected, need to escape to unmonitored protocols |
-| **Why not GRE (47)?** | Already blocked by some Iranian ISPs |
 | **Why not OSPF (89)?** | Would trigger routing anomalies |
 
 **Decision**: Protocol 115 exploits an "infrastructure blind spot" - it's used by carriers for L2 VPNs, so blocking it risks breaking enterprise services.
+
+#### GRE (Protocol 47)
+
+| Factor | Reasoning |
+|--------|-----------|
+| **Why GRE?** | Used by PPTP VPN, Cisco DMVPN, GCP load balancing |
+| **Why alongside Protocol 115?** | Higher real-world traffic volume, more to blend with |
+| **Why not GRE only?** | Some Iranian ISPs already filter GRE; 115 is less known |
+| **Key field** | Provides built-in session multiplexing (RFC 2890) |
+| **vs Protocol 115** | Complementary - GRE is the "known" option, 115 is the "obscure" one |
+
+**Decision**: GRE provides a well-known infrastructure alternative to Protocol 115. If one is blocked, the other likely isn't - they exploit different administrative blind spots.
 
 #### ICMP Tunneling
 
@@ -283,6 +314,31 @@ TUN/TAP was rejected because the kernel TCP stack would interfere with our FakeT
 | **Limitation** | Rate-limited on most networks, low bandwidth |
 
 **Decision**: ICMP provides a reliable fallback when TCP/UDP and protocol 115 are blocked, exploiting the "diagnostic necessity" loophole.
+
+#### DNS Tunneling
+
+| Factor | Reasoning |
+|--------|-----------|
+| **Why DNS?** | DNS is the one protocol that can NEVER be blocked |
+| **Why not iodine/dnscat2?** | External tools, different protocol, not integrated |
+| **Encoding** | Base32 in query names (DNS-safe), raw bytes in TXT responses |
+| **Why NULL records?** | NULL type allows arbitrary binary data in responses |
+| **Why not A/AAAA?** | Only 4/16 bytes per record - too low throughput |
+
+**Decision**: DNS tunnel is the ultimate fallback. Even during Iran's total internet shutdowns, internal DNS continues functioning. Low throughput (~50-100 KB/s) but virtually unblockable.
+
+#### UDP/QUIC Masquerade
+
+| Factor | Reasoning |
+|--------|-----------|
+| **Why QUIC?** | HTTP/3 adoption is massive (Google, YouTube, Cloudflare) |
+| **Why not real QUIC?** | Real QUIC handshake requires valid certificates |
+| **Why UDP:443?** | Established port for QUIC, expected by network equipment |
+| **Why mimic Initial?** | 1200-byte padding matches real QUIC, passes size heuristics |
+| **No root needed** | Standard UDP socket - works without CAP_NET_RAW |
+| **vs obfs4/shadowsocks** | Those are detectable; QUIC Initial is indistinguishable at L4 |
+
+**Decision**: QUIC masquerade fills a critical gap - a high-throughput transport that requires no special privileges. As QUIC traffic grows, blocking UDP:443 becomes increasingly costly for censors.
 
 ### Why Mimic Rubika/Eitaa?
 
@@ -412,7 +468,7 @@ curl --socks5 127.0.0.1:1080 https://check.torproject.org
 |--------|-------------|---------|
 | `-c, --config` | Path to configuration file | None |
 | `-l, --listen` | Listen address (ip:port) | 0.0.0.0:443 |
-| `-t, --transport` | Transport mode (faketcp, protocol115, icmp) | faketcp |
+| `-t, --transport` | Transport mode (faketcp, protocol115, icmp, dns, quicmasq, gre) | faketcp |
 | `-v, --verbose` | Enable debug logging | false |
 | `-k, --key-file` | Path to server private key | phantom-server.key |
 | `--print-key` | Print public key and exit | false |
@@ -439,7 +495,7 @@ curl --socks5 127.0.0.1:1080 https://check.torproject.org
   "mode": "client",
   "transport": {
     "primary": "faketcp",
-    "fallback": ["protocol115", "icmp"],
+    "fallback": ["quicmasq", "protocol115", "gre", "icmp", "dns"],
     "auto_switch": true,
     "switch_threshold_ms": 5000
   },
@@ -501,6 +557,20 @@ curl --socks5 127.0.0.1:1080 https://check.torproject.org
 
 ## Transport Modes
 
+### Comparison Matrix
+
+| Transport | Protocol | Root | Throughput | GFW Blind Spot | Novel? |
+|-----------|----------|:---:|:---:|---|:---:|
+| **FakeTCP** | TCP (raw) | Yes | High | RST injection immunity | |
+| **QUIC Masq** | UDP:443 | **No** | High | HTTP/3 traffic volume | |
+| **Protocol 115** | IP:115 | Yes | High | ISP infrastructure | |
+| **GRE** | IP:47 | Yes | High | Enterprise VPN trunks | |
+| **ICMP** | ICMP | Yes | Low | Diagnostic necessity | |
+| **DNS** | UDP:53 | **No** | Very Low | Required for internet | |
+| **HTTP Smuggle** | TCP:80/443 | **No** | High | CL/TE parsing ambiguity + Iran case-bug | **YES** |
+| **Video Parasite** | TCP:443 | **No** | Moderate | MPEG-TS spec allows arbitrary stuffing | **YES** |
+| **Proto Morph** | TCP:443 | **No** | High | No fingerprint exists (session-unique) | **YES** |
+
 ### FakeTCP (Default)
 
 Uses raw sockets to implement TCP-like behavior without the kernel's TCP stack. This prevents the kernel from interfering with RST packets injected by the GFW.
@@ -540,6 +610,161 @@ Tunnels data within ICMP Echo Request/Reply packets.
 - Limited bandwidth (typically rate-limited)
 - Payload size restrictions
 - May be deprioritized by network equipment
+
+### DNS Tunnel
+
+Encodes tunnel data inside DNS queries (base32 in query names) and responses (TXT records). DNS traffic on port 53 is never blocked because it's required for all internet functionality.
+
+**Pros:**
+- DNS is ALWAYS whitelisted - blocking it means no internet for anyone
+- Works on captive portals and extremely restricted networks
+- No root/raw socket required (standard UDP socket)
+- Can traverse any NAT
+
+**Cons:**
+- Low throughput (~50-100 KB/s) due to query name length limits
+- High latency (each exchange is a DNS round-trip)
+- Requires an authoritative DNS server for the tunnel domain
+- Heavy use may trigger DNS anomaly detection
+
+**Best for:** Last-resort fallback, control channel, environments where all other transports are blocked.
+
+### QUIC Masquerade
+
+Sends tunnel data over UDP port 443, wrapped in packets that mimic QUIC (HTTP/3) Initial handshake format. Real QUIC version numbers, connection IDs, and padding are used to pass cursory DPI inspection.
+
+**Pros:**
+- No root/raw socket required (standard UDP socket)
+- Blends with massive volume of real QUIC traffic (YouTube, Google, Cloudflare)
+- Blocking UDP:443 would break HTTP/3 for all users
+- QUIC DPI is immature compared to TLS/TCP inspection
+- NAT-friendly (UDP hole punching possible)
+
+**Cons:**
+- Deep QUIC inspection could detect missing real crypto handshake
+- Padding to 1200-byte minimum increases overhead
+- UDP may be rate-limited on some networks
+
+**Best for:** Primary transport when raw sockets aren't available, or when TCP-based transports are being filtered.
+
+### GRE (Protocol 47)
+
+Tunnels data using Generic Routing Encapsulation (IP Protocol 47), widely used by enterprise VPNs (PPTP), Cisco DMVPN, and cloud providers (GCP).
+
+**Pros:**
+- Infrastructure protocol - blocking breaks enterprise VPNs
+- Lower overhead than FakeTCP (4-12 byte GRE header)
+- Key field provides session multiplexing
+- Sequence numbers for packet ordering
+- Higher traffic volume than Protocol 115 (more to blend with)
+
+**Cons:**
+- Requires raw socket privileges (root)
+- Some Iranian ISPs have been observed filtering GRE
+- More widely known than Protocol 115, so more likely to be targeted
+
+**Best for:** Enterprise-like environments, networks where PPTP VPNs are expected, as alternative to Protocol 115.
+
+---
+
+### Novel Transports (Phantom Inventions)
+
+The following transports are **original inventions** - no production implementation exists for any of them.
+
+### HTTP Request Smuggling Tunnel
+
+Exploits the Content-Length vs Transfer-Encoding parsing ambiguity between Iran's DPI and our server. The DPI sees one interpretation of the HTTP stream; the tunnel server sees another. Additionally exploits Iran's **case-sensitive Host header matching bug** (discovered by FOCI 2025).
+
+**How the desync works:**
+```
+POST /api/v1/sync HTTP/1.1
+Host: Rubika.ir              ← Mixed case bypasses Iran's lowercase filter
+Content-Length: 5             ← DPI reads this: sees 5-byte body ("0\r\n\r\n")
+Transfer-Encoding: chunked   ← Server reads this: processes chunked body
+
+0\r\n\r\n                     ← DPI thinks request ends here
+[chunked tunnel data]         ← Server continues reading tunnel data
+```
+
+**Three desync modes:**
+- **CL/TE**: DPI prioritizes Content-Length, server reads Transfer-Encoding
+- **TE/CL**: Reversed - for DPI systems that prioritize TE
+- **TE Obfuscation**: Obfuscated TE header (`Transfer-Encoding : chunked`, tab/space variants) that DPI fails to recognize
+
+**Pros:**
+- High bandwidth (full HTTP body throughput, ~Mbps)
+- No root required (standard TCP socket)
+- Traffic is syntactically valid HTTP
+- Exploits known, documented Iran-specific DPI implementation bugs
+- Pipelined requests maintain persistent bidirectional channel
+
+**Cons:**
+- Relies on specific DPI parsing behavior (may be patched)
+- Server must implement custom HTTP parser
+- HTTP/2 changes the smuggling surface
+
+**Research:** FOCI 2024 "HTTP Request Smuggling for Censorship Evasion", FOCI 2025 "I(ra)nconsistencies in Iran's Censorship"
+
+### Video Stream Parasiting
+
+**First-ever implementation** of covert data embedding in HLS video Transport Stream packets. The concept was first proposed at IFIP Networking 2025 - no implementation exists anywhere.
+
+Tunnel data is hidden inside MPEG-TS packets (188 bytes fixed size) served as an HLS video stream over HTTPS. A real video plays as cover traffic.
+
+**Three embedding locations in each TS packet:**
+
+| Location | Spec Definition | Capacity per Packet |
+|----------|----------------|-------------------|
+| Adaptation field stuffing | "may be any value" (arbitrary padding) | ~160 bytes |
+| Null packets (PID 0x1FFF) | "may be inserted or discarded" | ~180 bytes |
+| Private data bytes | Explicitly for custom data | ~150 bytes |
+
+**Pros:**
+- Traffic IS a valid HTTPS video stream - the video actually plays
+- No DPI system decodes MPEG-TS packet internals
+- Adaptation stuffing bytes are defined as arbitrary by ISO/IEC 13818-1
+- Null packet contents are meaningless per spec
+- Packet sizes and timing match real HLS streaming patterns
+
+**Cons:**
+- Moderate bandwidth (~100 Kbps covert in a 1 Mbps stream)
+- Requires tunnel server to generate valid HLS segments
+- Higher latency than direct tunneling (segment-based)
+- Bandwidth overhead from cover video traffic
+
+**Research:** IFIP Networking 2025 "HLS Covert Channel" (first paper, no prior implementation)
+
+### Protocol Entropy Morphing
+
+Each session generates a **unique wire format** derived from the shared key. No two sessions have the same packet structure, field layout, or byte patterns. A DPI fingerprint **cannot exist** because there is nothing stable to fingerprint.
+
+Inspired by UPGen (USENIX Security 2025) but adapted for whitelist censors - runs over port 443 TCP and shapes traffic to match real protocol statistics.
+
+**What the morph seed generates (all deterministic, both sides compute identically):**
+
+| Component | Variation Range |
+|-----------|----------------|
+| Header size | 6-16 bytes |
+| Magic bytes | 2-4 unique bytes per session |
+| Length encoding | BE16 / LE16 / BE32 / Variable-length |
+| XOR mask | 256-byte session-unique mask applied to ALL bytes |
+| Padding | None / Fixed block / Random / HTTP-mimic sizes |
+| Sequence numbers | Present or absent |
+
+**Pros:**
+- No fingerprint possible - every session has different structure
+- XOR mask changes every byte's appearance across sessions
+- Same plaintext produces completely different ciphertext per session
+- DPI would need to fingerprint every individual connection (computationally infeasible)
+- Even if one session is detected, the rule won't match any other session
+- No root required
+
+**Cons:**
+- Requires shared seed (from key exchange)
+- Outer TCP framing is still visible (port 443, packet sizes)
+- Statistical analysis of connection behavior (not content) may still work
+
+**Research:** UPGen (USENIX Security 2025) - automatic protocol generation for censorship evasion
 
 ## Geneva Strategies
 
@@ -746,12 +971,18 @@ phantom/
 │   │   ├── client.rs          # Client binary
 │   │   └── server.rs          # Server binary
 │   ├── transport/
-│   │   ├── mod.rs             # Transport trait
+│   │   ├── mod.rs             # Transport trait + factory
 │   │   ├── packet.rs          # IP/TCP/ICMP headers
 │   │   ├── raw_socket.rs      # Raw socket wrapper
 │   │   ├── fake_tcp.rs        # FakeTCP implementation
 │   │   ├── protocol_115.rs    # L2TPv3-style transport
-│   │   └── icmp.rs            # ICMP tunnel
+│   │   ├── icmp.rs            # ICMP tunnel
+│   │   ├── dns_tunnel.rs      # DNS query/response tunnel
+│   │   ├── quic_masq.rs       # UDP/QUIC masquerade transport
+│   │   ├── gre.rs             # GRE (Protocol 47) transport
+│   │   ├── http_smuggle.rs    # [NOVEL] HTTP CL/TE request smuggling
+│   │   ├── video_parasite.rs  # [NOVEL] HLS/MPEG-TS covert channel
+│   │   └── proto_morph.rs     # [NOVEL] Session-unique wire format
 │   ├── geneva/
 │   │   ├── mod.rs             # Strategy trait
 │   │   ├── strategies.rs      # DPI evasion strategies

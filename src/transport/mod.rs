@@ -1,14 +1,30 @@
 //! Transport layer for Phantom tunnel
 //!
 //! Provides multiple transport mechanisms:
+//!
+//! **Standard transports (reimplementations of known techniques):**
 //! - FakeTCP: Raw socket TCP with kernel bypass
 //! - Protocol 115: L2TPv3-style raw IP packets
 //! - ICMP: Echo request/reply tunneling
+//! - DNS: DNS query/response tunneling (always whitelisted)
+//! - QUIC Masquerade: UDP:443 mimicking QUIC Initial packets
+//! - GRE: Generic Routing Encapsulation (IP Protocol 47)
+//!
+//! **Novel transports (Phantom inventions):**
+//! - HTTP Smuggle: CL/TE desync exploiting DPI parsing bugs
+//! - Video Parasite: Covert data in HLS/MPEG-TS packets (first implementation ever)
+//! - Proto Morph: Session-unique wire format, no fingerprint possible
 
 pub mod raw_socket;
 pub mod fake_tcp;
 pub mod protocol_115;
 pub mod icmp;
+pub mod dns_tunnel;
+pub mod quic_masq;
+pub mod gre;
+pub mod http_smuggle;
+pub mod video_parasite;
+pub mod proto_morph;
 pub mod packet;
 
 use crate::config::TransportMode;
@@ -19,6 +35,12 @@ use std::net::SocketAddr;
 pub use fake_tcp::FakeTcpTransport;
 pub use protocol_115::Protocol115Transport;
 pub use icmp::IcmpTransport;
+pub use dns_tunnel::DnsTunnelTransport;
+pub use quic_masq::QuicMasqTransport;
+pub use gre::GreTransport;
+pub use http_smuggle::HttpSmuggleTransport;
+pub use video_parasite::VideoParasiteTransport;
+pub use proto_morph::ProtoMorphTransport;
 pub use packet::{Packet, PacketBuilder};
 
 /// Trait for all transport implementations
@@ -73,10 +95,50 @@ pub async fn create_transport(
             let transport = IcmpTransport::new(bind_addr).await?;
             Ok(Box::new(transport))
         }
+        TransportMode::Dns => {
+            // DNS tunnel requires a tunnel domain - use default
+            let transport = DnsTunnelTransport::new(bind_addr, "t.phantom.local".into()).await?;
+            Ok(Box::new(transport))
+        }
+        TransportMode::QuicMasq => {
+            let transport = QuicMasqTransport::new(bind_addr).await?;
+            Ok(Box::new(transport))
+        }
+        TransportMode::Gre => {
+            let transport = GreTransport::new(bind_addr).await?;
+            Ok(Box::new(transport))
+        }
+        TransportMode::HttpSmuggle => {
+            let transport = HttpSmuggleTransport::new(bind_addr).await?;
+            Ok(Box::new(transport))
+        }
+        TransportMode::VideoParasite => {
+            let transport = VideoParasiteTransport::new(bind_addr).await?;
+            Ok(Box::new(transport))
+        }
+        TransportMode::ProtoMorph => {
+            // ProtoMorph requires a shared seed - use random for factory default
+            let transport = ProtoMorphTransport::new_random(bind_addr).await?;
+            Ok(Box::new(transport))
+        }
         TransportMode::Tcp => {
             // Standard TCP fallback - uses FakeTcp in passthrough mode
             let transport = FakeTcpTransport::new_passthrough(bind_addr).await?;
             Ok(Box::new(transport))
         }
     }
+}
+
+/// Create a DNS transport with a specific tunnel domain
+pub async fn create_dns_transport(
+    bind_addr: SocketAddr,
+    tunnel_domain: String,
+    is_server: bool,
+) -> Result<Box<dyn Transport>> {
+    let transport = if is_server {
+        DnsTunnelTransport::new_server(bind_addr, tunnel_domain).await?
+    } else {
+        DnsTunnelTransport::new(bind_addr, tunnel_domain).await?
+    };
+    Ok(Box::new(transport))
 }

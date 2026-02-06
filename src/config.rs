@@ -111,7 +111,13 @@ impl Default for TransportConfig {
     fn default() -> Self {
         Self {
             primary: TransportMode::FakeTcp,
-            fallback: vec![TransportMode::Protocol115, TransportMode::Icmp],
+            fallback: vec![
+                TransportMode::QuicMasq,
+                TransportMode::Protocol115,
+                TransportMode::Gre,
+                TransportMode::Icmp,
+                TransportMode::Dns,
+            ],
             auto_switch: true,
             switch_threshold: 0.3, // 30% packet loss triggers switch
             send_rate: 0,          // Adaptive
@@ -122,12 +128,28 @@ impl Default for TransportConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TransportMode {
+    // --- Standard transports (reimplementations) ---
     /// Raw socket FakeTCP (like udp2raw/Paqet)
     FakeTcp,
     /// IP Protocol 115 (L2TPv3)
     Protocol115,
     /// ICMP Echo tunneling
     Icmp,
+    /// DNS query/response tunneling (always whitelisted, low bandwidth)
+    Dns,
+    /// UDP:443 masquerading as QUIC Initial packets (no root required)
+    QuicMasq,
+    /// GRE (IP Protocol 47) - infrastructure tunnel protocol
+    Gre,
+
+    // --- Novel transports (Phantom inventions) ---
+    /// HTTP CL/TE request smuggling (exploits DPI parsing ambiguity)
+    HttpSmuggle,
+    /// HLS video stream parasiting (covert data in MPEG-TS packets)
+    VideoParasite,
+    /// Protocol entropy morphing (session-unique wire format)
+    ProtoMorph,
+
     /// Standard TCP (fallback)
     Tcp,
 }
@@ -138,8 +160,35 @@ impl TransportMode {
             TransportMode::FakeTcp => 6,  // TCP
             TransportMode::Protocol115 => 115,
             TransportMode::Icmp => 1,
+            TransportMode::Dns => 17,     // UDP (DNS uses UDP)
+            TransportMode::QuicMasq => 17, // UDP
+            TransportMode::Gre => 47,
+            TransportMode::HttpSmuggle => 6,  // TCP (HTTP)
+            TransportMode::VideoParasite => 6, // TCP (HTTPS)
+            TransportMode::ProtoMorph => 6,   // TCP
             TransportMode::Tcp => 6,
         }
+    }
+
+    /// Whether this transport requires raw socket (root) privileges
+    pub fn requires_raw_socket(&self) -> bool {
+        match self {
+            TransportMode::FakeTcp => true,
+            TransportMode::Protocol115 => true,
+            TransportMode::Icmp => true,
+            TransportMode::Gre => true,
+            TransportMode::Dns => false,           // Standard UDP socket
+            TransportMode::QuicMasq => false,      // Standard UDP socket
+            TransportMode::HttpSmuggle => false,   // Standard TCP socket
+            TransportMode::VideoParasite => false, // Standard TCP socket
+            TransportMode::ProtoMorph => false,    // Standard TCP socket
+            TransportMode::Tcp => false,
+        }
+    }
+
+    /// Whether this is a novel Phantom-invented transport
+    pub fn is_novel(&self) -> bool {
+        matches!(self, TransportMode::HttpSmuggle | TransportMode::VideoParasite | TransportMode::ProtoMorph)
     }
 }
 
