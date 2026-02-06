@@ -8,6 +8,10 @@ nul
 **/*.rs.bk
 *.pdb
 
+# Downloaded binaries & runtime data
+/bin/
+/data/
+
 # Release artifacts
 *.tar.gz
 *.zip

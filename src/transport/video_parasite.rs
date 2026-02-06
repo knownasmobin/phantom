@@ -331,7 +331,7 @@ impl TsSegment {
 
     /// Parse TS packets from raw bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        if data.len() % TS_PACKET_SIZE != 0 {
+        if !data.len().is_multiple_of(TS_PACKET_SIZE) {
             return Err(PhantomError::PacketParse(format!(
                 "TS data length {} not multiple of {}",
                 data.len(),

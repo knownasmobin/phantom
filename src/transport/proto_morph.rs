@@ -203,7 +203,7 @@ impl WireFormat {
         };
 
         // Sequence number: 50% chance
-        let has_sequence = rng.next_u32() % 2 == 0;
+        let has_sequence = rng.next_u32().is_multiple_of(2);
         let sequence_offset = if has_sequence {
             length_field_offset
                 + match length_encoding {

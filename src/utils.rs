@@ -169,7 +169,7 @@ pub fn xor_bytes(a: &[u8], b: &[u8]) -> Vec<u8> {
 pub fn pad_to_block(data: &[u8], block_size: usize) -> Vec<u8> {
     let padding_needed = (block_size - (data.len() % block_size)) % block_size;
     let mut padded = data.to_vec();
-    padded.extend(std::iter::repeat(0u8).take(padding_needed));
+    padded.extend(std::iter::repeat_n(0u8, padding_needed));
     padded
 }
 
