@@ -1,0 +1,84 @@
+[package]
+name = "phantom"
+version = "0.1.0"
+edition = "2021"
+authors = ["Phantom Team"]
+description = "Adaptive State-Masquerade Tunnel (ASMT) for censorship circumvention"
+license = "MIT"
+readme = "README.md"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1.35", features = ["full", "rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
+async-trait = "0.1"
+
+# Raw socket and packet crafting
+socket2 = { version = "0.5", features = ["all"] }
+pnet = "0.35"
+etherparse = "0.15"
+
+# Cryptography
+chacha20poly1305 = "0.10"
+x25519-dalek = { version = "2.0", features = ["static_secrets"] }
+blake2 = "0.10"
+rand = "0.8"
+snow = "0.9"  # Noise Protocol implementation
+
+# Forward Error Correction
+reed-solomon-erasure = "6.0"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bincode = "1.3"
+
+# CLI
+clap = { version = "4.4", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Utilities
+bytes = "1.5"
+byteorder = "1.5"
+hex = "0.4"
+base64 = "0.21"
+parking_lot = "0.12"
+dashmap = "5.5"
+crossbeam-channel = "0.5"
+
+# TLS fingerprinting
+rustls = "0.23"
+
+# Async channels
+flume = "0.11"
+
+# Time
+chrono = "0.4"
+
+[dev-dependencies]
+criterion = "0.5"
+proptest = "1.4"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.dev]
+opt-level = 1
+
+[[bin]]
+name = "phantom-client"
+path = "src/bin/client.rs"
+
+[[bin]]
+name = "phantom-server"
+path = "src/bin/server.rs"
