@@ -4,7 +4,6 @@ use super::strategies::*;
 use super::{Direction, PacketAction, PacketContext, Strategy};
 use crate::config::{GenevaConfig, GenevaStrategy as GenevaStrategyType};
 use crate::error::Result;
-use crate::transport::packet::Packet;
 
 use rand::Rng;
 use std::net::Ipv4Addr;
@@ -29,27 +28,15 @@ impl GenevaEngine {
 
         for strategy_type in &config.strategies {
             let strategy: Arc<dyn Strategy> = match strategy_type {
-                GenevaStrategyType::TcpSegmentation => {
-                    Arc::new(TcpSegmentationStrategy::default())
-                }
+                GenevaStrategyType::TcpSegmentation => Arc::new(TcpSegmentationStrategy::default()),
                 GenevaStrategyType::ChecksumPoisoning => {
                     Arc::new(ChecksumPoisoningStrategy::default())
                 }
-                GenevaStrategyType::TtlExpiry => {
-                    Arc::new(TtlExpiryStrategy::default())
-                }
-                GenevaStrategyType::DuplicateAck => {
-                    Arc::new(DuplicateAckStrategy::default())
-                }
-                GenevaStrategyType::FinBeforeSyn => {
-                    Arc::new(FinBeforeSynStrategy::default())
-                }
-                GenevaStrategyType::RstWithShortTtl => {
-                    Arc::new(RstWithShortTtlStrategy::default())
-                }
-                GenevaStrategyType::OutOfOrder => {
-                    Arc::new(OutOfOrderStrategy::default())
-                }
+                GenevaStrategyType::TtlExpiry => Arc::new(TtlExpiryStrategy::default()),
+                GenevaStrategyType::DuplicateAck => Arc::new(DuplicateAckStrategy::default()),
+                GenevaStrategyType::FinBeforeSyn => Arc::new(FinBeforeSynStrategy::default()),
+                GenevaStrategyType::RstWithShortTtl => Arc::new(RstWithShortTtlStrategy::default()),
+                GenevaStrategyType::OutOfOrder => Arc::new(OutOfOrderStrategy::default()),
             };
             strategies.push(strategy);
         }
@@ -58,8 +45,8 @@ impl GenevaEngine {
             strategies,
             probability: config.probability,
             enabled: config.enabled,
-            middlebox_ttl: 8,  // Conservative default
-            server_ttl: 64,    // Default TTL
+            middlebox_ttl: 8, // Conservative default
+            server_ttl: 64,   // Default TTL
         }
     }
 
@@ -153,7 +140,9 @@ impl GenevaEngine {
 
     /// Check if a specific strategy is enabled
     pub fn has_strategy(&self, strategy_type: GenevaStrategyType) -> bool {
-        self.strategies.iter().any(|s| s.strategy_type() == strategy_type)
+        self.strategies
+            .iter()
+            .any(|s| s.strategy_type() == strategy_type)
     }
 
     /// Add a custom strategy
@@ -204,7 +193,8 @@ impl GenevaEngineBuilder {
     }
 
     pub fn with_checksum_poisoning(mut self) -> Self {
-        self.strategies.push(Arc::new(ChecksumPoisoningStrategy::default()));
+        self.strategies
+            .push(Arc::new(ChecksumPoisoningStrategy::default()));
         self
     }
 
@@ -224,19 +214,20 @@ impl GenevaEngineBuilder {
     }
 
     pub fn with_fin_before_syn(mut self, count: u8) -> Self {
-        self.strategies.push(Arc::new(FinBeforeSynStrategy {
-            num_fins: count,
-        }));
+        self.strategies
+            .push(Arc::new(FinBeforeSynStrategy { num_fins: count }));
         self
     }
 
     pub fn with_rst_short_ttl(mut self, ttl: u8) -> Self {
-        self.strategies.push(Arc::new(RstWithShortTtlStrategy { ttl }));
+        self.strategies
+            .push(Arc::new(RstWithShortTtlStrategy { ttl }));
         self
     }
 
     pub fn with_out_of_order(mut self) -> Self {
-        self.strategies.push(Arc::new(OutOfOrderStrategy::default()));
+        self.strategies
+            .push(Arc::new(OutOfOrderStrategy::default()));
         self
     }
 
@@ -276,10 +267,7 @@ impl Default for GenevaEngineBuilder {
 ///
 /// This sends packets with increasing TTL and measures where
 /// ICMP Time Exceeded messages come from.
-pub async fn probe_middlebox_ttl(
-    dst_ip: Ipv4Addr,
-    dst_port: u16,
-) -> Result<u8> {
+pub async fn probe_middlebox_ttl(dst_ip: Ipv4Addr, dst_port: u16) -> Result<u8> {
     // This is a simplified implementation
     // A real implementation would send probes and analyze ICMP responses
 

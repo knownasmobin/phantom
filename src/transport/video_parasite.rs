@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use parking_lot::RwLock;
+use tokio::sync::Mutex;
 
 // ============================================================
 // MPEG-TS Constants
@@ -125,14 +125,14 @@ impl TsPacket {
 
         // PID spread across bytes 1-2
         data[1] = ((pid >> 8) & 0x1F) as u8; // TEI=0, PUSI=0, Priority=0, PID high
-        data[2] = (pid & 0xFF) as u8;        // PID low
+        data[2] = (pid & 0xFF) as u8; // PID low
 
         // Both AF and payload present
         data[3] = AF_EXISTS | PAYLOAD_EXISTS;
 
         // Adaptation field
         let covert_len = covert_data.len().min(160); // Leave room for header + video payload
-        let af_length = 2 + covert_len; // flags(1) + magic check area + stuffing with data
+        let af_length = 3 + covert_len; // flags(1) + magic(2) + covert data
 
         data[4] = af_length as u8; // Adaptation field length
         data[5] = 0x00; // AF flags: no PCR, no OPCR, no splice, no private data flag
@@ -250,8 +250,9 @@ impl TsSegment {
         let mut packets = Vec::new();
 
         // Calculate how many packets we need for the covert data
-        let bytes_per_null_packet = TS_PACKET_SIZE - 8; // 180 bytes per null packet
-        let bytes_per_af_packet = 158; // ~158 bytes in adaptation field stuffing
+        // Limit per-packet capacity to spread data across both null and AF packets
+        let bytes_per_null_packet = 80; // Spread data across multiple packets
+        let bytes_per_af_packet = 80; // Spread data across multiple packets
         let mut data_offset = 0;
 
         // Target: ~30% null packets (realistic for real video streams)
@@ -289,7 +290,9 @@ impl TsSegment {
                 // No more covert data - fill with normal video packets
                 if i % 5 == 0 {
                     // Some null packets for realism (rate padding)
-                    let mut null = TsPacket { data: [0xFF; TS_PACKET_SIZE] };
+                    let mut null = TsPacket {
+                        data: [0xFF; TS_PACKET_SIZE],
+                    };
                     null.data[0] = TS_SYNC_BYTE;
                     null.data[1] = 0x1F;
                     null.data[2] = 0xFF;
@@ -329,9 +332,11 @@ impl TsSegment {
     /// Parse TS packets from raw bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
         if data.len() % TS_PACKET_SIZE != 0 {
-            return Err(PhantomError::PacketParse(
-                format!("TS data length {} not multiple of {}", data.len(), TS_PACKET_SIZE)
-            ));
+            return Err(PhantomError::PacketParse(format!(
+                "TS data length {} not multiple of {}",
+                data.len(),
+                TS_PACKET_SIZE
+            )));
         }
 
         let mut packets = Vec::new();
@@ -339,7 +344,9 @@ impl TsSegment {
             if chunk[0] != TS_SYNC_BYTE {
                 return Err(PhantomError::PacketParse("Missing TS sync byte".into()));
             }
-            let mut packet = TsPacket { data: [0; TS_PACKET_SIZE] };
+            let mut packet = TsPacket {
+                data: [0; TS_PACKET_SIZE],
+            };
             packet.data.copy_from_slice(chunk);
             packets.push(packet);
         }
@@ -358,7 +365,10 @@ pub fn generate_playlist(segment_count: u32, segment_duration: f64, base_url: &s
 
     playlist.push_str("#EXTM3U\n");
     playlist.push_str("#EXT-X-VERSION:3\n");
-    playlist.push_str(&format!("#EXT-X-TARGETDURATION:{}\n", segment_duration.ceil() as u32));
+    playlist.push_str(&format!(
+        "#EXT-X-TARGETDURATION:{}\n",
+        segment_duration.ceil() as u32
+    ));
     playlist.push_str("#EXT-X-MEDIA-SEQUENCE:0\n");
 
     for i in 0..segment_count {
@@ -380,7 +390,7 @@ pub fn generate_playlist(segment_count: u32, segment_duration: f64, base_url: &s
 /// Downstream: HTTP GET responses containing TS segments with embedded data
 pub struct VideoParasiteTransport {
     /// TCP stream to the tunnel server
-    stream: Arc<RwLock<Option<TcpStream>>>,
+    stream: Arc<Mutex<Option<TcpStream>>>,
     /// Remote server address
     remote_addr: SocketAddr,
     /// Video PID for cover traffic
@@ -405,7 +415,7 @@ impl VideoParasiteTransport {
     /// Create a new video parasite transport
     pub async fn new(remote_addr: SocketAddr) -> Result<Self> {
         Ok(Self {
-            stream: Arc::new(RwLock::new(None)),
+            stream: Arc::new(Mutex::new(None)),
             remote_addr,
             video_pid: TS_COVERT_PID,
             segment_counter: AtomicU64::new(0),
@@ -422,13 +432,14 @@ impl VideoParasiteTransport {
 
     /// Ensure connection to the tunnel server
     async fn ensure_connected(&self) -> Result<()> {
-        let needs_connect = self.stream.read().is_none();
+        let needs_connect = self.stream.lock().await.is_none();
 
         if needs_connect {
-            let stream = TcpStream::connect(self.remote_addr).await
+            let stream = TcpStream::connect(self.remote_addr)
+                .await
                 .map_err(|e| PhantomError::Socket(format!("Video connect failed: {}", e)))?;
             stream.set_nodelay(true).ok();
-            *self.stream.write() = Some(stream);
+            *self.stream.lock().await = Some(stream);
         }
         Ok(())
     }
@@ -471,7 +482,9 @@ impl VideoParasiteTransport {
         // Check if body length is multiple of TS_PACKET_SIZE
         let ts_len = (body.len() / TS_PACKET_SIZE) * TS_PACKET_SIZE;
         if ts_len == 0 {
-            return Err(PhantomError::PacketParse("No TS packets in response".into()));
+            return Err(PhantomError::PacketParse(
+                "No TS packets in response".into(),
+            ));
         }
 
         // Parse TS segment and extract covert data
@@ -479,7 +492,9 @@ impl VideoParasiteTransport {
         let covert_data = segment.extract_covert_data();
 
         if covert_data.is_empty() {
-            return Err(PhantomError::InvalidPacket("No covert data in segment".into()));
+            return Err(PhantomError::InvalidPacket(
+                "No covert data in segment".into(),
+            ));
         }
 
         Ok(covert_data)
@@ -489,8 +504,7 @@ impl VideoParasiteTransport {
 /// Find \r\n\r\n in data
 fn find_header_end(data: &[u8]) -> Option<usize> {
     for i in 0..data.len().saturating_sub(3) {
-        if data[i] == b'\r' && data[i + 1] == b'\n'
-            && data[i + 2] == b'\r' && data[i + 3] == b'\n'
+        if data[i] == b'\r' && data[i + 1] == b'\n' && data[i + 2] == b'\r' && data[i + 3] == b'\n'
         {
             return Some(i + 4);
         }
@@ -509,13 +523,14 @@ impl Transport for VideoParasiteTransport {
 
         let request = self.build_segment_request(data);
 
-        let mut guard = self.stream.write();
+        let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
-            stream.write_all(&request).await
-                .map_err(|e| PhantomError::Io(e))?;
+            stream.write_all(&request).await.map_err(PhantomError::Io)?;
 
             self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
-            self.stats.bytes_sent.fetch_add(request.len() as u64, Ordering::Relaxed);
+            self.stats
+                .bytes_sent
+                .fetch_add(request.len() as u64, Ordering::Relaxed);
 
             Ok(data.len())
         } else {
@@ -528,10 +543,9 @@ impl Transport for VideoParasiteTransport {
 
         let mut raw_buf = [0u8; 131072]; // 128KB buffer for video segments
 
-        let mut guard = self.stream.write();
+        let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
-            let n = stream.read(&mut raw_buf).await
-                .map_err(|e| PhantomError::Io(e))?;
+            let n = stream.read(&mut raw_buf).await.map_err(PhantomError::Io)?;
 
             if n == 0 {
                 *guard = None;
@@ -544,7 +558,9 @@ impl Transport for VideoParasiteTransport {
                     buf[..len].copy_from_slice(&data[..len]);
 
                     self.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
-                    self.stats.bytes_recv.fetch_add(len as u64, Ordering::Relaxed);
+                    self.stats
+                        .bytes_recv
+                        .fetch_add(len as u64, Ordering::Relaxed);
 
                     Ok((len, self.remote_addr))
                 }
@@ -560,7 +576,7 @@ impl Transport for VideoParasiteTransport {
 
     async fn close(&self) -> Result<()> {
         self.running.store(false, Ordering::SeqCst);
-        let mut guard = self.stream.write();
+        let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
             let _ = stream.shutdown().await;
         }
@@ -635,7 +651,11 @@ mod tests {
 
         // Verify we have a mix of packet types
         let null_count = segment.packets.iter().filter(|p| p.is_null()).count();
-        let af_count = segment.packets.iter().filter(|p| p.has_adaptation_field()).count();
+        let af_count = segment
+            .packets
+            .iter()
+            .filter(|p| p.has_adaptation_field())
+            .count();
         assert!(null_count > 0, "Should have null packets");
         assert!(af_count > 0, "Should have adaptation field packets");
 

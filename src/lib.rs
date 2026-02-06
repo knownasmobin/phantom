@@ -15,12 +15,12 @@
 
 pub mod config;
 pub mod crypto;
+pub mod error;
 pub mod fec;
 pub mod geneva;
 pub mod handshake;
 pub mod transport;
 pub mod tunnel;
-pub mod error;
 pub mod utils;
 
 pub use config::Config;

@@ -5,15 +5,13 @@
 //! - XChaCha20-Poly1305 for symmetric encryption
 //! - Replay protection
 
+pub mod keys;
 pub mod noise;
 pub mod symmetric;
-pub mod keys;
 
+pub use keys::{KeyPair, PrivateKey, PublicKey};
 pub use noise::NoiseSession;
-pub use symmetric::{Cipher, encrypt, decrypt};
-pub use keys::{KeyPair, PublicKey, PrivateKey};
-
-use crate::error::Result;
+pub use symmetric::{decrypt, encrypt, Cipher};
 
 /// Maximum payload size for encrypted packets
 pub const MAX_PAYLOAD_SIZE: usize = 65535 - 16 - 8; // Max - tag - nonce overhead

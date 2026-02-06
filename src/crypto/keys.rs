@@ -1,10 +1,11 @@
 //! Key management for Phantom tunnel
 
 use crate::error::{PhantomError, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use rand::rngs::OsRng;
-use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 use std::fmt;
 use std::path::Path;
+use x25519_dalek::{PublicKey as X25519Public, StaticSecret};
 
 /// A Curve25519 public key
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -27,22 +28,23 @@ impl PublicKey {
     }
 
     pub fn to_base64(&self) -> String {
-        base64::encode(&self.0)
+        BASE64.encode(self.0)
     }
 
     pub fn from_base64(s: &str) -> Result<Self> {
-        let bytes = base64::decode(s)
+        let bytes = BASE64
+            .decode(s)
             .map_err(|e| PhantomError::Config(format!("Invalid base64: {}", e)))?;
         Self::from_bytes(&bytes)
     }
 
     pub fn to_hex(&self) -> String {
-        hex::encode(&self.0)
+        hex::encode(self.0)
     }
 
     pub fn from_hex(s: &str) -> Result<Self> {
-        let bytes = hex::decode(s)
-            .map_err(|e| PhantomError::Config(format!("Invalid hex: {}", e)))?;
+        let bytes =
+            hex::decode(s).map_err(|e| PhantomError::Config(format!("Invalid hex: {}", e)))?;
         Self::from_bytes(&bytes)
     }
 }
@@ -99,11 +101,12 @@ impl PrivateKey {
     }
 
     pub fn to_base64(&self) -> String {
-        base64::encode(self.as_bytes())
+        BASE64.encode(self.as_bytes())
     }
 
     pub fn from_base64(s: &str) -> Result<Self> {
-        let bytes = base64::decode(s)
+        let bytes = BASE64
+            .decode(s)
             .map_err(|e| PhantomError::Config(format!("Invalid base64: {}", e)))?;
         Self::from_bytes(&bytes)
     }

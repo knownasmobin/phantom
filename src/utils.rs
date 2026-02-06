@@ -28,12 +28,7 @@ pub fn internet_checksum(data: &[u8]) -> u16 {
 }
 
 /// Calculate TCP/UDP checksum with pseudo-header
-pub fn tcp_checksum(
-    src_ip: Ipv4Addr,
-    dst_ip: Ipv4Addr,
-    protocol: u8,
-    tcp_segment: &[u8],
-) -> u16 {
+pub fn tcp_checksum(src_ip: Ipv4Addr, dst_ip: Ipv4Addr, protocol: u8, tcp_segment: &[u8]) -> u16 {
     let mut pseudo_header = Vec::with_capacity(12 + tcp_segment.len());
 
     // Pseudo-header
@@ -105,7 +100,8 @@ impl MonotonicCounter {
     }
 
     pub fn next(&self) -> u64 {
-        self.counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        self.counter
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn current(&self) -> u64 {

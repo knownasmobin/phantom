@@ -9,7 +9,7 @@
 //! - May be rate-limited by ISPs
 //! - Best used as fallback/control channel
 
-use super::packet::{IpHeader, IcmpHeader, PacketBuilder, Packet, TransportHeader};
+use super::packet::{IcmpHeader, IpHeader, Packet, PacketBuilder, TransportHeader};
 use super::raw_socket::RawSocket;
 use super::{Transport, TransportStats};
 use crate::config::TransportMode;
@@ -17,11 +17,11 @@ use crate::error::{PhantomError, Result};
 use crate::utils::random_u16;
 
 use async_trait::async_trait;
+use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::Arc;
-use parking_lot::RwLock;
-use std::collections::HashMap;
 
 /// ICMP tunnel session
 pub struct IcmpSession {
@@ -133,7 +133,13 @@ impl IcmpTransport {
     }
 
     /// Build an ICMP Echo Reply packet
-    fn build_echo_reply(&self, dst_ip: Ipv4Addr, identifier: u16, sequence: u16, payload: &[u8]) -> Vec<u8> {
+    fn build_echo_reply(
+        &self,
+        dst_ip: Ipv4Addr,
+        identifier: u16,
+        sequence: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
         let mut packet = PacketBuilder::new(1, self.local_ip, dst_ip)
             .icmp_echo_reply(identifier, sequence)
             .payload(payload)
@@ -155,17 +161,16 @@ impl IcmpTransport {
             let is_request = icmp.icmp_type == IcmpHeader::ECHO_REQUEST;
 
             if !is_reply && !is_request {
-                return Err(PhantomError::InvalidPacket(
-                    format!("Unsupported ICMP type: {}", icmp.icmp_type)
-                ));
+                return Err(PhantomError::InvalidPacket(format!(
+                    "Unsupported ICMP type: {}",
+                    icmp.icmp_type
+                )));
             }
 
             // In client mode, we expect replies with our identifier
             // In server mode, we accept any requests
-            if self.is_client {
-                if !is_reply || icmp.identifier != self.identifier {
-                    return Err(PhantomError::InvalidPacket("Not our ICMP reply".into()));
-                }
+            if self.is_client && (!is_reply || icmp.identifier != self.identifier) {
+                return Err(PhantomError::InvalidPacket("Not our ICMP reply".into()));
             }
 
             Ok((
@@ -183,7 +188,8 @@ impl IcmpTransport {
     /// Get or create a session for a remote IP
     fn get_or_create_session(&self, remote_ip: Ipv4Addr) -> Arc<IcmpSession> {
         let mut sessions = self.sessions.write();
-        sessions.entry(remote_ip)
+        sessions
+            .entry(remote_ip)
             .or_insert_with(|| Arc::new(IcmpSession::new(self.identifier, remote_ip)))
             .clone()
     }
@@ -206,7 +212,9 @@ impl Transport for IcmpTransport {
         self.socket.send_to(&packet, dst).await?;
 
         self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
-        self.stats.bytes_sent.fetch_add(packet.len() as u64, Ordering::Relaxed);
+        self.stats
+            .bytes_sent
+            .fetch_add(packet.len() as u64, Ordering::Relaxed);
 
         Ok(data.len())
     }
@@ -236,7 +244,9 @@ impl Transport for IcmpTransport {
                     buf[..len].copy_from_slice(&payload[..len]);
 
                     self.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
-                    self.stats.bytes_recv.fetch_add(len as u64, Ordering::Relaxed);
+                    self.stats
+                        .bytes_recv
+                        .fetch_add(len as u64, Ordering::Relaxed);
 
                     return Ok((len, SocketAddr::V4(SocketAddrV4::new(src_ip, identifier))));
                 }
@@ -308,12 +318,11 @@ impl RateLimitedIcmpTransport {
             let elapsed = now.saturating_sub(last);
 
             if elapsed >= self.min_interval_us {
-                if self.last_send.compare_exchange(
-                    last,
-                    now,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                ).is_ok() {
+                if self
+                    .last_send
+                    .compare_exchange(last, now, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
                     return;
                 }
             } else {

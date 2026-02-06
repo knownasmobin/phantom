@@ -4,10 +4,11 @@
 //!   phantom-server --config <path>
 //!   phantom-server --listen <ip:port>
 
-use phantom::{Config, PhantomError, Result};
 use phantom::config::{Mode, TransportMode};
-use phantom::crypto::{KeyPair, PublicKey, SharedNoiseSession};
-use phantom::tunnel::{PhantomTunnel, TunnelBuilder, TunnelState};
+use phantom::crypto::noise::SharedNoiseSession;
+use phantom::crypto::KeyPair;
+use phantom::tunnel::{PhantomTunnel, TunnelBuilder};
+use phantom::{Config, PhantomError, Result};
 
 use clap::Parser;
 use std::collections::HashMap;
@@ -17,7 +18,7 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::RwLock;
-use tracing::{info, error, debug, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Parser, Debug)]
 #[command(name = "phantom-server")]
@@ -50,6 +51,7 @@ struct Args {
 }
 
 /// Active client session
+#[allow(dead_code)]
 struct ClientSession {
     session: SharedNoiseSession,
     last_activity: std::time::Instant,
@@ -64,9 +66,7 @@ async fn main() -> Result<()> {
 
     // Initialize logging
     let log_level = if args.verbose { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(log_level)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(log_level).init();
 
     // Load or generate server keypair
     let server_keypair = if args.key_file.exists() {
@@ -100,7 +100,10 @@ async fn main() -> Result<()> {
         "icmp" => TransportMode::Icmp,
         _ => {
             error!("Unknown transport mode: {}", args.transport);
-            return Err(PhantomError::Config(format!("Unknown transport: {}", args.transport)));
+            return Err(PhantomError::Config(format!(
+                "Unknown transport: {}",
+                args.transport
+            )));
         }
     };
 
@@ -163,11 +166,14 @@ async fn main() -> Result<()> {
                 let sessions = sessions.clone();
 
                 // Store session
-                sessions.write().await.insert(client_addr, ClientSession {
-                    session: session.clone(),
-                    last_activity: std::time::Instant::now(),
-                    remote_addr: client_addr,
-                });
+                sessions.write().await.insert(
+                    client_addr,
+                    ClientSession {
+                        session: session.clone(),
+                        last_activity: std::time::Instant::now(),
+                        remote_addr: client_addr,
+                    },
+                );
 
                 // Handle client
                 tokio::spawn(async move {
@@ -187,7 +193,7 @@ async fn main() -> Result<()> {
 /// Handle a connected client
 async fn handle_client(
     tunnel: Arc<PhantomTunnel>,
-    session: SharedNoiseSession,
+    _session: SharedNoiseSession,
     client_addr: SocketAddr,
 ) -> Result<()> {
     let mut buf = vec![0u8; 65535];
@@ -212,11 +218,11 @@ async fn handle_client(
 
                 // Connect to destination
                 match TcpStream::connect(dest).await {
-                    Ok(mut dest_stream) => {
+                    Ok(dest_stream) => {
                         info!("Connected to {} for client {}", dest, client_addr);
 
                         // Bidirectional proxy
-                        let (mut dest_read, mut dest_write) = dest_stream.split();
+                        let (mut dest_read, mut dest_write) = dest_stream.into_split();
 
                         // Tunnel -> Destination
                         let tunnel_recv = tunnel.clone();

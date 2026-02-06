@@ -23,8 +23,17 @@ SHA256SUMS.txt
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
 
 # Environment / secrets
 .env
 *.key
 *.pem
+*.p12
+*.pfx
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log

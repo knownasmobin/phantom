@@ -126,10 +126,11 @@ impl Default for TransportConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum TransportMode {
     // --- Standard transports (reimplementations) ---
     /// Raw socket FakeTCP (like udp2raw/Paqet)
+    #[default]
     FakeTcp,
     /// IP Protocol 115 (L2TPv3)
     Protocol115,
@@ -157,15 +158,15 @@ pub enum TransportMode {
 impl TransportMode {
     pub fn protocol_number(&self) -> u8 {
         match self {
-            TransportMode::FakeTcp => 6,  // TCP
+            TransportMode::FakeTcp => 6, // TCP
             TransportMode::Protocol115 => 115,
             TransportMode::Icmp => 1,
-            TransportMode::Dns => 17,     // UDP (DNS uses UDP)
+            TransportMode::Dns => 17,      // UDP (DNS uses UDP)
             TransportMode::QuicMasq => 17, // UDP
             TransportMode::Gre => 47,
-            TransportMode::HttpSmuggle => 6,  // TCP (HTTP)
+            TransportMode::HttpSmuggle => 6,   // TCP (HTTP)
             TransportMode::VideoParasite => 6, // TCP (HTTPS)
-            TransportMode::ProtoMorph => 6,   // TCP
+            TransportMode::ProtoMorph => 6,    // TCP
             TransportMode::Tcp => 6,
         }
     }
@@ -188,7 +189,10 @@ impl TransportMode {
 
     /// Whether this is a novel Phantom-invented transport
     pub fn is_novel(&self) -> bool {
-        matches!(self, TransportMode::HttpSmuggle | TransportMode::VideoParasite | TransportMode::ProtoMorph)
+        matches!(
+            self,
+            TransportMode::HttpSmuggle | TransportMode::VideoParasite | TransportMode::ProtoMorph
+        )
     }
 }
 

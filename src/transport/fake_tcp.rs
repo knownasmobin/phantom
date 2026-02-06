@@ -7,8 +7,8 @@
 //! - Custom congestion control (or none)
 //! - Geneva strategy integration
 
-use super::packet::{IpHeader, TcpHeader, TcpFlags, Packet, TransportHeader, PacketBuilder};
-use super::raw_socket::{RawSocket, IptablesGuard};
+use super::packet::{Packet, PacketBuilder, TcpFlags, TransportHeader};
+use super::raw_socket::{IptablesGuard, RawSocket};
 use super::{Transport, TransportStats};
 use crate::config::TransportMode;
 use crate::error::{PhantomError, Result};
@@ -20,7 +20,6 @@ use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 
 /// FakeTCP connection state
@@ -126,7 +125,10 @@ impl FakeTcpTransport {
         let iptables_guard = match IptablesGuard::new_server(local_port) {
             Ok(guard) => Some(guard),
             Err(e) => {
-                tracing::warn!("Failed to set up iptables rules: {}. Continuing without RST suppression.", e);
+                tracing::warn!(
+                    "Failed to set up iptables rules: {}. Continuing without RST suppression.",
+                    e
+                );
                 None
             }
         };
@@ -169,7 +171,7 @@ impl FakeTcpTransport {
         let conn = Arc::new(RwLock::new(FakeTcpConnection::new(local, remote)));
 
         // Send SYN
-        {
+        let data = {
             let mut c = conn.write();
             c.state = TcpState::SynSent;
             let seq = c.next_seq(1); // SYN consumes 1 sequence number
@@ -181,11 +183,13 @@ impl FakeTcpTransport {
                 .tcp_window(65535)
                 .build();
 
-            let data = packet.to_bytes();
-            self.socket.send_to(&data, remote_addr).await?;
-            self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
-            self.stats.bytes_sent.fetch_add(data.len() as u64, Ordering::Relaxed);
-        }
+            packet.to_bytes()
+        };
+        self.socket.send_to(&data, remote_addr).await?;
+        self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .bytes_sent
+            .fetch_add(data.len() as u64, Ordering::Relaxed);
 
         // Wait for SYN-ACK
         let mut buf = [0u8; 65535];
@@ -212,24 +216,26 @@ impl FakeTcpTransport {
                     if let TransportHeader::Tcp(tcp) = &packet.transport {
                         if tcp.flags.syn && tcp.flags.ack {
                             // Got SYN-ACK
-                            let mut c = conn.write();
-                            c.remote_seq = tcp.seq_num;
-                            c.set_ack(tcp.seq_num + 1);
-                            c.state = TcpState::Established;
+                            let data = {
+                                let mut c = conn.write();
+                                c.remote_seq = tcp.seq_num;
+                                c.set_ack(tcp.seq_num + 1);
+                                c.state = TcpState::Established;
 
-                            // Send ACK
-                            let seq = c.current_seq();
-                            let ack = c.current_ack();
+                                // Send ACK
+                                let seq = c.current_seq();
+                                let ack = c.current_ack();
 
-                            let mut ack_packet = PacketBuilder::new(6, self.local_ip, *remote.ip())
-                                .tcp(self.local_port, remote.port())
-                                .tcp_flags(TcpFlags::ack())
-                                .tcp_seq(seq)
-                                .tcp_ack(ack)
-                                .tcp_window(65535)
-                                .build();
+                                let mut ack_packet = PacketBuilder::new(6, self.local_ip, *remote.ip())
+                                    .tcp(self.local_port, remote.port())
+                                    .tcp_flags(TcpFlags::ack())
+                                    .tcp_seq(seq)
+                                    .tcp_ack(ack)
+                                    .tcp_window(65535)
+                                    .build();
 
-                            let data = ack_packet.to_bytes();
+                                ack_packet.to_bytes()
+                            };
                             self.socket.send_to(&data, remote_addr).await?;
                             self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
 
@@ -249,7 +255,9 @@ impl FakeTcpTransport {
 
     /// Send data over an established connection
     pub async fn send_data(&self, data: &[u8], remote: SocketAddrV4) -> Result<usize> {
-        let conn = self.connections.read()
+        let conn = self
+            .connections
+            .read()
             .get(&remote)
             .cloned()
             .ok_or_else(|| PhantomError::InvalidState("No connection".into()))?;
@@ -257,7 +265,9 @@ impl FakeTcpTransport {
         let (seq, ack) = {
             let mut c = conn.write();
             if c.state != TcpState::Established {
-                return Err(PhantomError::InvalidState("Connection not established".into()));
+                return Err(PhantomError::InvalidState(
+                    "Connection not established".into(),
+                ));
             }
             let seq = c.next_seq(data.len() as u32);
             let ack = c.current_ack();
@@ -275,10 +285,15 @@ impl FakeTcpTransport {
             .build();
 
         let packet_data = packet.to_bytes();
-        let sent = self.socket.send_to(&packet_data, SocketAddr::V4(remote)).await?;
+        let sent = self
+            .socket
+            .send_to(&packet_data, SocketAddr::V4(remote))
+            .await?;
 
         self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
-        self.stats.bytes_sent.fetch_add(packet_data.len() as u64, Ordering::Relaxed);
+        self.stats
+            .bytes_sent
+            .fetch_add(packet_data.len() as u64, Ordering::Relaxed);
 
         Ok(data.len())
     }
@@ -313,10 +328,13 @@ impl FakeTcpTransport {
     /// Get or create a connection for a remote address
     pub fn get_or_create_connection(&self, remote: SocketAddrV4) -> Arc<RwLock<FakeTcpConnection>> {
         let mut connections = self.connections.write();
-        connections.entry(remote).or_insert_with(|| {
-            let local = SocketAddrV4::new(self.local_ip, self.local_port);
-            Arc::new(RwLock::new(FakeTcpConnection::new(local, remote)))
-        }).clone()
+        connections
+            .entry(remote)
+            .or_insert_with(|| {
+                let local = SocketAddrV4::new(self.local_ip, self.local_port);
+                Arc::new(RwLock::new(FakeTcpConnection::new(local, remote)))
+            })
+            .clone()
     }
 }
 
@@ -381,17 +399,21 @@ impl Transport for FakeTcpTransport {
                     // This is a new connection attempt - handle in server mode
                     let remote = SocketAddrV4::new(packet.ip.src_ip, tcp.src_port);
                     let conn = self.get_or_create_connection(remote);
-                    let mut c = conn.write();
+                    let send_info = {
+                        let mut c = conn.write();
+                        if c.state == TcpState::Closed || c.state == TcpState::Listen {
+                            c.state = TcpState::SynReceived;
+                            c.remote_seq = tcp.seq_num;
+                            c.set_ack(tcp.seq_num + 1);
+                            let seq = c.next_seq(1);
+                            let ack = c.current_ack();
+                            Some((seq, ack))
+                        } else {
+                            None
+                        }
+                    };
 
-                    if c.state == TcpState::Closed || c.state == TcpState::Listen {
-                        c.state = TcpState::SynReceived;
-                        c.remote_seq = tcp.seq_num;
-                        c.set_ack(tcp.seq_num + 1);
-
-                        // Send SYN-ACK
-                        let seq = c.next_seq(1);
-                        let ack = c.current_ack();
-
+                    if let Some((seq, ack)) = send_info {
                         let mut syn_ack = PacketBuilder::new(6, self.local_ip, packet.ip.src_ip)
                             .tcp(self.local_port, tcp.src_port)
                             .tcp_flags(TcpFlags::syn_ack())
@@ -427,16 +449,20 @@ impl Transport for FakeTcpTransport {
                 if !packet.payload.is_empty() {
                     let remote = SocketAddrV4::new(packet.ip.src_ip, tcp.src_port);
 
-                    // Update connection state
-                    if let Some(conn) = self.connections.read().get(&remote).cloned() {
-                        let mut c = conn.write();
-                        c.set_ack(tcp.seq_num + packet.payload.len() as u32);
-                        c.last_activity = Instant::now();
+                    // Update connection state and get ACK info
+                    let ack_info = {
+                        let conns = self.connections.read();
+                        conns.get(&remote).cloned().map(|conn| {
+                            let mut c = conn.write();
+                            c.set_ack(tcp.seq_num + packet.payload.len() as u32);
+                            c.last_activity = Instant::now();
+                            let seq = c.current_seq();
+                            let ack = c.current_ack();
+                            (seq, ack)
+                        })
+                    };
 
-                        // Send ACK
-                        let seq = c.current_seq();
-                        let ack = c.current_ack();
-
+                    if let Some((seq, ack)) = ack_info {
                         let mut ack_packet = PacketBuilder::new(6, self.local_ip, packet.ip.src_ip)
                             .tcp(self.local_port, tcp.src_port)
                             .tcp_flags(TcpFlags::ack())
@@ -453,7 +479,9 @@ impl Transport for FakeTcpTransport {
                     buf[..len].copy_from_slice(&packet.payload[..len]);
 
                     self.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
-                    self.stats.bytes_recv.fetch_add(len as u64, Ordering::Relaxed);
+                    self.stats
+                        .bytes_recv
+                        .fetch_add(len as u64, Ordering::Relaxed);
 
                     return Ok((len, SocketAddr::V4(remote)));
                 }
@@ -465,12 +493,23 @@ impl Transport for FakeTcpTransport {
         self.running.store(false, Ordering::SeqCst);
 
         // Send FIN to all connections
-        for (remote, conn) in self.connections.read().iter() {
-            let c = conn.read();
-            if c.state == TcpState::Established {
-                let seq = c.current_seq();
-                let ack = c.current_ack();
+        let connections: Vec<_> = self
+            .connections
+            .read()
+            .iter()
+            .map(|(k, v)| (*k, v.clone()))
+            .collect();
+        for (remote, conn) in connections {
+            let fin_info = {
+                let c = conn.read();
+                if c.state == TcpState::Established {
+                    Some((c.current_seq(), c.current_ack()))
+                } else {
+                    None
+                }
+            };
 
+            if let Some((seq, ack)) = fin_info {
                 let mut fin_packet = PacketBuilder::new(6, self.local_ip, *remote.ip())
                     .tcp(self.local_port, remote.port())
                     .tcp_flags(TcpFlags::fin_ack())
@@ -480,7 +519,7 @@ impl Transport for FakeTcpTransport {
                     .build();
 
                 let data = fin_packet.to_bytes();
-                let _ = self.socket.send_to(&data, SocketAddr::V4(*remote)).await;
+                let _ = self.socket.send_to(&data, SocketAddr::V4(remote)).await;
             }
         }
 

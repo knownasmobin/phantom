@@ -25,7 +25,7 @@
 //! We use the enhanced GRE header (RFC 2890) with Key and Sequence fields
 //! for session identification and ordering.
 
-use super::packet::{IpHeader, PacketBuilder, Packet};
+use super::packet::{IpHeader, Packet, PacketBuilder};
 use super::raw_socket::RawSocket;
 use super::{Transport, TransportStats};
 use crate::config::TransportMode;
@@ -163,7 +163,9 @@ impl GreHeader {
         // Parse optional Checksum + Reserved1
         if flags & GRE_FLAG_CHECKSUM != 0 {
             if data.len() < offset + 4 {
-                return Err(PhantomError::PacketParse("GRE checksum field truncated".into()));
+                return Err(PhantomError::PacketParse(
+                    "GRE checksum field truncated".into(),
+                ));
             }
             header.checksum = Some(u16::from_be_bytes([data[offset], data[offset + 1]]));
             offset += 4; // checksum + reserved1
@@ -175,7 +177,10 @@ impl GreHeader {
                 return Err(PhantomError::PacketParse("GRE key field truncated".into()));
             }
             header.key = Some(u32::from_be_bytes([
-                data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
             ]));
             offset += 4;
         }
@@ -183,10 +188,15 @@ impl GreHeader {
         // Parse optional Sequence
         if flags & GRE_FLAG_SEQUENCE != 0 {
             if data.len() < offset + 4 {
-                return Err(PhantomError::PacketParse("GRE sequence field truncated".into()));
+                return Err(PhantomError::PacketParse(
+                    "GRE sequence field truncated".into(),
+                ));
             }
             header.sequence = Some(u32::from_be_bytes([
-                data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
             ]));
             offset += 4;
         }
@@ -310,9 +320,10 @@ impl GreTransport {
         let packet = Packet::from_bytes(data)?;
 
         if packet.ip.protocol != GRE_PROTOCOL {
-            return Err(PhantomError::InvalidPacket(
-                format!("Expected protocol {}, got {}", GRE_PROTOCOL, packet.ip.protocol)
-            ));
+            return Err(PhantomError::InvalidPacket(format!(
+                "Expected protocol {}, got {}",
+                GRE_PROTOCOL, packet.ip.protocol
+            )));
         }
 
         // Parse GRE header from payload
@@ -322,9 +333,10 @@ impl GreTransport {
         match gre_header.key {
             Some(key) if key == self.tunnel_key => {}
             Some(key) => {
-                return Err(PhantomError::InvalidPacket(
-                    format!("GRE key mismatch: expected {}, got {}", self.tunnel_key, key)
-                ));
+                return Err(PhantomError::InvalidPacket(format!(
+                    "GRE key mismatch: expected {}, got {}",
+                    self.tunnel_key, key
+                )));
             }
             None => {
                 return Err(PhantomError::InvalidPacket("GRE packet missing key".into()));
@@ -358,7 +370,9 @@ impl Transport for GreTransport {
         let sent = self.socket.send_to(&packet, dst).await?;
 
         self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
-        self.stats.bytes_sent.fetch_add(packet.len() as u64, Ordering::Relaxed);
+        self.stats
+            .bytes_sent
+            .fetch_add(packet.len() as u64, Ordering::Relaxed);
 
         Ok(data.len())
     }
@@ -380,7 +394,9 @@ impl Transport for GreTransport {
                     buf[..len].copy_from_slice(&payload[..len]);
 
                     self.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
-                    self.stats.bytes_recv.fetch_add(len as u64, Ordering::Relaxed);
+                    self.stats
+                        .bytes_recv
+                        .fetch_add(len as u64, Ordering::Relaxed);
 
                     return Ok((len, SocketAddr::V4(SocketAddrV4::new(src_ip, 0))));
                 }

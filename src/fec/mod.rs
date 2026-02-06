@@ -9,8 +9,8 @@
 //! - parity_shards: Number of redundancy packets
 //! - With 10 data + 3 parity, we can recover from 30% loss
 
-use crate::error::{PhantomError, Result};
 use crate::config::FecConfig;
+use crate::error::{PhantomError, Result};
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use std::sync::Arc;
 
@@ -37,7 +37,11 @@ impl FecCodec {
     }
 
     /// Create with explicit parameters
-    pub fn with_params(data_shards: usize, parity_shards: usize, shard_size: usize) -> Result<Self> {
+    pub fn with_params(
+        data_shards: usize,
+        parity_shards: usize,
+        shard_size: usize,
+    ) -> Result<Self> {
         let rs = ReedSolomon::new(data_shards, parity_shards)
             .map_err(|e| PhantomError::Config(format!("FEC config error: {:?}", e)))?;
 
@@ -79,13 +83,15 @@ impl FecCodec {
 
         // Pad data if necessary
         let mut padded_data = data.to_vec();
-        if padded_data.len() < total_data_size {
-            padded_data.resize(total_data_size, 0);
-        } else if padded_data.len() > total_data_size {
-            return Err(PhantomError::PacketTooLarge {
-                size: padded_data.len(),
-                max: total_data_size,
-            });
+        match padded_data.len().cmp(&total_data_size) {
+            std::cmp::Ordering::Less => padded_data.resize(total_data_size, 0),
+            std::cmp::Ordering::Greater => {
+                return Err(PhantomError::PacketTooLarge {
+                    size: padded_data.len(),
+                    max: total_data_size,
+                });
+            }
+            std::cmp::Ordering::Equal => {}
         }
 
         // Create shards
@@ -104,7 +110,8 @@ impl FecCodec {
         }
 
         // Generate parity
-        self.rs.encode(&mut shards)
+        self.rs
+            .encode(&mut shards)
             .map_err(|e| PhantomError::Protocol(format!("FEC encode error: {:?}", e)))?;
 
         Ok(shards)
@@ -114,7 +121,7 @@ impl FecCodec {
     ///
     /// Input: Vec of Option<shard> - None for missing shards
     /// Output: Original data (if recoverable)
-    pub fn decode(&self, shards: &mut Vec<Option<Vec<u8>>>) -> Result<Vec<u8>> {
+    pub fn decode(&self, shards: &mut [Option<Vec<u8>>]) -> Result<Vec<u8>> {
         if shards.len() != self.total_shards() {
             return Err(PhantomError::Protocol(format!(
                 "Expected {} shards, got {}",
@@ -130,7 +137,8 @@ impl FecCodec {
         }
 
         // Reconstruct missing shards
-        self.rs.reconstruct(shards)
+        self.rs
+            .reconstruct(shards)
             .map_err(|_| PhantomError::FecDecodeFailed)?;
 
         // Extract data from data shards
@@ -247,7 +255,12 @@ pub struct FecBlockAssembler {
 }
 
 impl FecBlockAssembler {
-    pub fn new(block_id: u32, total_shards: usize, data_shards: usize, original_len: usize) -> Self {
+    pub fn new(
+        block_id: u32,
+        total_shards: usize,
+        data_shards: usize,
+        original_len: usize,
+    ) -> Self {
         Self {
             block_id,
             total_shards,
@@ -431,7 +444,8 @@ mod tests {
         let shards = codec.encode(data).unwrap();
 
         // Simulate packet loss (lose 2 shards)
-        let mut partial_shards: Vec<Option<Vec<u8>>> = shards.iter().map(|s| Some(s.clone())).collect();
+        let mut partial_shards: Vec<Option<Vec<u8>>> =
+            shards.iter().map(|s| Some(s.clone())).collect();
         partial_shards[1] = None; // Lose shard 1
         partial_shards[3] = None; // Lose shard 3
 
@@ -449,7 +463,8 @@ mod tests {
         let shards = codec.encode(data).unwrap();
 
         // Lose too many shards (3 out of 6, only 3 left but need 4)
-        let mut partial_shards: Vec<Option<Vec<u8>>> = shards.iter().map(|s| Some(s.clone())).collect();
+        let mut partial_shards: Vec<Option<Vec<u8>>> =
+            shards.iter().map(|s| Some(s.clone())).collect();
         partial_shards[0] = None;
         partial_shards[2] = None;
         partial_shards[4] = None;

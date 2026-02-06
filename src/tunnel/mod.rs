@@ -8,19 +8,19 @@
 //! - Handshake mimicry (TLS fingerprinting)
 
 use crate::config::{Config, TransportMode};
-use crate::crypto::{KeyPair, PublicKey, NoiseSession, SharedNoiseSession};
+use crate::crypto::noise::SharedNoiseSession;
+use crate::crypto::{KeyPair, NoiseSession, PublicKey};
 use crate::error::{PhantomError, Result};
-use crate::fec::{FecCodec, FecSender, FecReceiver, FecPacket};
+use crate::fec::{FecCodec, FecPacket, FecSender};
 use crate::geneva::GenevaEngine;
 use crate::handshake::generate_client_hello;
-use crate::transport::{Transport, TransportStats, create_transport};
+use crate::transport::{create_transport, Transport};
 
-use std::net::SocketAddr;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use tokio::sync::mpsc;
-use tokio::time::{Duration, Instant};
 use parking_lot::RwLock;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use tokio::time::Instant;
 
 /// Tunnel state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,7 +54,7 @@ pub struct TunnelStats {
 pub struct PhantomTunnel {
     config: Config,
     state: Arc<RwLock<TunnelState>>,
-    transport: Arc<RwLock<Option<Box<dyn Transport>>>>,
+    transport: Arc<RwLock<Option<Arc<dyn Transport>>>>,
     noise_session: Arc<RwLock<Option<SharedNoiseSession>>>,
     geneva: Arc<GenevaEngine>,
     fec_codec: Option<Arc<FecCodec>>,
@@ -121,10 +121,8 @@ impl PhantomTunnel {
         let start = Instant::now();
 
         // Create transport
-        let transport = create_transport(
-            self.config.transport.primary,
-            self.config.network.bind_addr,
-        ).await?;
+        let transport =
+            create_transport(self.config.transport.primary, self.config.network.bind_addr).await?;
 
         // Generate fake TLS ClientHello for mimicry
         let client_hello = generate_client_hello(&self.config.handshake, None)?;
@@ -132,7 +130,7 @@ impl PhantomTunnel {
         // Create Noise session
         let mut noise = NoiseSession::new_initiator(
             self.local_keypair.clone(),
-            self.remote_public.clone().unwrap(),
+            self.remote_public.unwrap(),
             None, // TODO: Add PSK support
         )?;
 
@@ -170,7 +168,9 @@ impl PhantomTunnel {
                     return Ok::<_, PhantomError>(buf[..n].to_vec());
                 }
             }
-        }).await.map_err(|_| PhantomError::Timeout)??;
+        })
+        .await
+        .map_err(|_| PhantomError::Timeout)??;
 
         // Process response
         let _payload = noise.read_handshake(&response)?;
@@ -197,10 +197,8 @@ impl PhantomTunnel {
         self.running.store(true, Ordering::SeqCst);
 
         // Create transport
-        let transport = create_transport(
-            self.config.transport.primary,
-            self.config.network.bind_addr,
-        ).await?;
+        let transport =
+            create_transport(self.config.transport.primary, self.config.network.bind_addr).await?;
 
         *self.transport.write() = Some(transport);
 
@@ -209,7 +207,9 @@ impl PhantomTunnel {
 
     /// Accept a connection (server mode)
     pub async fn accept(&self) -> Result<(SocketAddr, SharedNoiseSession)> {
-        let transport = self.transport.read()
+        let transport = self
+            .transport
+            .read()
             .as_ref()
             .ok_or_else(|| PhantomError::InvalidState("Not listening".into()))?
             .clone();
@@ -239,12 +239,16 @@ impl PhantomTunnel {
 
     /// Send data through the tunnel
     pub async fn send(&self, data: &[u8], remote_addr: SocketAddr) -> Result<usize> {
-        let transport = self.transport.read()
+        let transport = self
+            .transport
+            .read()
             .as_ref()
             .ok_or_else(|| PhantomError::InvalidState("Not connected".into()))?
             .clone();
 
-        let session = self.noise_session.read()
+        let session = self
+            .noise_session
+            .read()
             .as_ref()
             .ok_or_else(|| PhantomError::InvalidState("No session".into()))?
             .clone();
@@ -296,12 +300,16 @@ impl PhantomTunnel {
 
     /// Receive data from the tunnel
     pub async fn recv(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
-        let transport = self.transport.read()
+        let transport = self
+            .transport
+            .read()
             .as_ref()
             .ok_or_else(|| PhantomError::InvalidState("Not connected".into()))?
             .clone();
 
-        let session = self.noise_session.read()
+        let session = self
+            .noise_session
+            .read()
             .as_ref()
             .ok_or_else(|| PhantomError::InvalidState("No session".into()))?
             .clone();
@@ -352,7 +360,8 @@ impl PhantomTunnel {
     pub async fn close(&self) -> Result<()> {
         self.running.store(false, Ordering::SeqCst);
 
-        if let Some(transport) = self.transport.write().take() {
+        let transport = self.transport.write().take();
+        if let Some(transport) = transport {
             transport.close().await?;
         }
 

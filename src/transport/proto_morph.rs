@@ -37,7 +37,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use parking_lot::RwLock;
+use tokio::sync::Mutex;
 
 // ============================================================
 // Deterministic PRNG seeded from morph_seed
@@ -52,11 +52,17 @@ struct MorphRng {
 impl MorphRng {
     fn from_seed(seed: &[u8; 32]) -> Self {
         let mut state = [0u64; 4];
-        for i in 0..4 {
+        for (i, s) in state.iter_mut().enumerate() {
             let offset = i * 8;
-            state[i] = u64::from_le_bytes([
-                seed[offset], seed[offset + 1], seed[offset + 2], seed[offset + 3],
-                seed[offset + 4], seed[offset + 5], seed[offset + 6], seed[offset + 7],
+            *s = u64::from_le_bytes([
+                seed[offset],
+                seed[offset + 1],
+                seed[offset + 2],
+                seed[offset + 3],
+                seed[offset + 4],
+                seed[offset + 5],
+                seed[offset + 6],
+                seed[offset + 7],
             ]);
         }
         // Ensure state is never all-zero
@@ -199,14 +205,28 @@ impl WireFormat {
         // Sequence number: 50% chance
         let has_sequence = rng.next_u32() % 2 == 0;
         let sequence_offset = if has_sequence {
-            length_field_offset + match length_encoding {
-                LengthEncoding::BigEndian16 | LengthEncoding::LittleEndian16 => 2,
-                LengthEncoding::BigEndian32 => 4,
-                LengthEncoding::Variable => 2, // Assume typical 2-byte
-            }
+            length_field_offset
+                + match length_encoding {
+                    LengthEncoding::BigEndian16 | LengthEncoding::LittleEndian16 => 2,
+                    LengthEncoding::BigEndian32 => 4,
+                    LengthEncoding::Variable => 2, // Assume typical 2-byte
+                }
         } else {
             0
         };
+
+        // Ensure header is large enough for all fields
+        let min_header = if has_sequence {
+            sequence_offset + 4
+        } else {
+            length_field_offset
+                + match length_encoding {
+                    LengthEncoding::BigEndian16 | LengthEncoding::LittleEndian16 => 2,
+                    LengthEncoding::BigEndian32 => 4,
+                    LengthEncoding::Variable => 2,
+                }
+        };
+        let header_size = header_size.max(min_header);
 
         // XOR mask: 256 bytes (repeating)
         let xor_mask = rng.next_bytes(256);
@@ -267,15 +287,14 @@ impl WireFormat {
         // Write sequence number if enabled
         if self.has_sequence && self.sequence_offset + 4 <= self.header_size {
             let seq_bytes = sequence.to_be_bytes();
-            packet[self.sequence_offset..self.sequence_offset + 4]
-                .copy_from_slice(&seq_bytes);
+            packet[self.sequence_offset..self.sequence_offset + 4].copy_from_slice(&seq_bytes);
         }
 
         // Fill remaining header bytes with deterministic padding
         // (so they don't stand out as zeros)
-        for i in 0..self.header_size {
-            if packet[i] == 0 && !self.is_field_position(i) {
-                packet[i] = self.xor_mask[i % self.xor_mask.len()];
+        for (i, byte) in packet[..self.header_size].iter_mut().enumerate() {
+            if *byte == 0 && !self.is_field_position(i) {
+                *byte = self.xor_mask[i % self.xor_mask.len()];
             }
         }
 
@@ -325,7 +344,9 @@ impl WireFormat {
         let payload_end = payload_start + payload_len;
 
         if payload_end > unmasked.len() {
-            return Err(PhantomError::PacketParse("Morph payload exceeds packet".into()));
+            return Err(PhantomError::PacketParse(
+                "Morph payload exceeds packet".into(),
+            ));
         }
 
         let payload = unmasked[payload_start..payload_end].to_vec();
@@ -402,8 +423,10 @@ impl WireFormat {
                     return Err(PhantomError::PacketParse("Length field truncated".into()));
                 }
                 Ok(u32::from_be_bytes([
-                    header[offset], header[offset + 1],
-                    header[offset + 2], header[offset + 3],
+                    header[offset],
+                    header[offset + 1],
+                    header[offset + 2],
+                    header[offset + 3],
                 ]) as usize)
             }
             LengthEncoding::Variable => {
@@ -417,7 +440,9 @@ impl WireFormat {
                     let low = header[offset + 1] as usize;
                     Ok((high << 8) | low)
                 } else {
-                    Err(PhantomError::PacketParse("Variable length truncated".into()))
+                    Err(PhantomError::PacketParse(
+                        "Variable length truncated".into(),
+                    ))
                 }
             }
         }
@@ -456,7 +481,7 @@ impl WireFormat {
                 padded
             }
             PaddingStrategy::FixedBlock(block) => {
-                let total = ((2 + data.len() + block - 1) / block) * block;
+                let total = (2 + data.len()).div_ceil(block) * block;
                 let mut padded = Vec::with_capacity(total);
                 padded.extend_from_slice(&(data.len() as u16).to_be_bytes());
                 padded.extend_from_slice(data);
@@ -474,7 +499,9 @@ impl WireFormat {
             PaddingStrategy::HttpMimic => {
                 // Pad to nearest mimic size
                 let base_len = 2 + data.len();
-                let target = self.mimic_sizes.iter()
+                let target = self
+                    .mimic_sizes
+                    .iter()
                     .find(|&&s| s >= base_len)
                     .copied()
                     .unwrap_or(*self.mimic_sizes.last().unwrap_or(&base_len));
@@ -492,11 +519,15 @@ impl WireFormat {
     /// Remove padding from decoded payload
     fn remove_padding(&self, payload: &[u8]) -> Result<Vec<u8>> {
         if payload.len() < 2 {
-            return Err(PhantomError::PacketParse("Payload too short for length prefix".into()));
+            return Err(PhantomError::PacketParse(
+                "Payload too short for length prefix".into(),
+            ));
         }
         let data_len = u16::from_be_bytes([payload[0], payload[1]]) as usize;
         if 2 + data_len > payload.len() {
-            return Err(PhantomError::PacketParse("Data length exceeds payload".into()));
+            return Err(PhantomError::PacketParse(
+                "Data length exceeds payload".into(),
+            ));
         }
         Ok(payload[2..2 + data_len].to_vec())
     }
@@ -509,7 +540,7 @@ impl WireFormat {
 /// Protocol Entropy Morphing Transport
 pub struct ProtoMorphTransport {
     /// TCP stream
-    stream: Arc<RwLock<Option<TcpStream>>>,
+    stream: Arc<Mutex<Option<TcpStream>>>,
     /// Remote address
     remote_addr: SocketAddr,
     /// Session-unique wire format
@@ -538,7 +569,7 @@ impl ProtoMorphTransport {
         let wire_format = WireFormat::from_seed(&seed);
 
         Ok(Self {
-            stream: Arc::new(RwLock::new(None)),
+            stream: Arc::new(Mutex::new(None)),
             remote_addr,
             wire_format,
             sequence: AtomicU64::new(0),
@@ -568,13 +599,14 @@ impl ProtoMorphTransport {
 
     /// Ensure connection
     async fn ensure_connected(&self) -> Result<()> {
-        let needs_connect = self.stream.read().is_none();
+        let needs_connect = self.stream.lock().await.is_none();
 
         if needs_connect {
-            let stream = TcpStream::connect(self.remote_addr).await
+            let stream = TcpStream::connect(self.remote_addr)
+                .await
                 .map_err(|e| PhantomError::Socket(format!("Morph connect failed: {}", e)))?;
             stream.set_nodelay(true).ok();
-            *self.stream.write() = Some(stream);
+            *self.stream.lock().await = Some(stream);
         }
         Ok(())
     }
@@ -596,18 +628,21 @@ impl Transport for ProtoMorphTransport {
         let seq = self.next_sequence();
         let packet = self.wire_format.encode(data, seq);
 
-        let mut guard = self.stream.write();
+        let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
             // Send length prefix (4 bytes) + packet
             // This framing is also morphed by the XOR mask
             let frame_len = (packet.len() as u32).to_be_bytes();
-            stream.write_all(&frame_len).await
-                .map_err(|e| PhantomError::Io(e))?;
-            stream.write_all(&packet).await
-                .map_err(|e| PhantomError::Io(e))?;
+            stream
+                .write_all(&frame_len)
+                .await
+                .map_err(PhantomError::Io)?;
+            stream.write_all(&packet).await.map_err(PhantomError::Io)?;
 
             self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
-            self.stats.bytes_sent.fetch_add((4 + packet.len()) as u64, Ordering::Relaxed);
+            self.stats
+                .bytes_sent
+                .fetch_add((4 + packet.len()) as u64, Ordering::Relaxed);
 
             Ok(data.len())
         } else {
@@ -618,12 +653,14 @@ impl Transport for ProtoMorphTransport {
     async fn recv(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
         self.ensure_connected().await?;
 
-        let mut guard = self.stream.write();
+        let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
             // Read frame length
             let mut len_buf = [0u8; 4];
-            stream.read_exact(&mut len_buf).await
-                .map_err(|e| PhantomError::Io(e))?;
+            stream
+                .read_exact(&mut len_buf)
+                .await
+                .map_err(PhantomError::Io)?;
 
             let frame_len = u32::from_be_bytes(len_buf) as usize;
             if frame_len > 65535 {
@@ -632,8 +669,10 @@ impl Transport for ProtoMorphTransport {
 
             // Read the morphed packet
             let mut packet = vec![0u8; frame_len];
-            stream.read_exact(&mut packet).await
-                .map_err(|e| PhantomError::Io(e))?;
+            stream
+                .read_exact(&mut packet)
+                .await
+                .map_err(PhantomError::Io)?;
 
             // Decode
             let (data, _seq) = self.wire_format.decode(&packet)?;
@@ -642,7 +681,9 @@ impl Transport for ProtoMorphTransport {
             buf[..len].copy_from_slice(&data[..len]);
 
             self.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
-            self.stats.bytes_recv.fetch_add((4 + frame_len) as u64, Ordering::Relaxed);
+            self.stats
+                .bytes_recv
+                .fetch_add((4 + frame_len) as u64, Ordering::Relaxed);
 
             Ok((len, self.remote_addr))
         } else {
@@ -652,7 +693,7 @@ impl Transport for ProtoMorphTransport {
 
     async fn close(&self) -> Result<()> {
         self.running.store(false, Ordering::SeqCst);
-        let mut guard = self.stream.write();
+        let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
             let _ = stream.shutdown().await;
         }
@@ -741,7 +782,11 @@ mod tests {
         // Verify roundtrip
         let (decoded, seq) = format.decode(&encoded).unwrap();
         assert_eq!(decoded, data);
-        assert_eq!(seq, 42);
+        if format.has_sequence {
+            assert_eq!(seq, 42);
+        } else {
+            assert_eq!(seq, 0);
+        }
     }
 
     #[test]

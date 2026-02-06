@@ -5,7 +5,7 @@
 
 use crate::config::MimicTarget;
 use crate::error::{PhantomError, Result};
-use crate::utils::{random_bytes, random_u16};
+use crate::utils::random_bytes;
 
 /// TLS record types
 pub mod record_type {
@@ -159,7 +159,8 @@ impl TlsClientHello {
         offset += session_id_len;
 
         // Parse cipher suites
-        let cipher_len = u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]) as usize;
+        let cipher_len =
+            u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]) as usize;
         offset += 2;
 
         let mut cipher_suites = Vec::new();
@@ -179,13 +180,16 @@ impl TlsClientHello {
         // Parse extensions
         let mut extensions = Vec::new();
         if offset + 2 <= client_hello.len() {
-            let ext_len = u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]) as usize;
+            let ext_len =
+                u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]) as usize;
             offset += 2;
 
             let ext_end = offset + ext_len;
             while offset + 4 <= ext_end && offset + 4 <= client_hello.len() {
                 let ext_type = u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]);
-                let data_len = u16::from_be_bytes([client_hello[offset + 2], client_hello[offset + 3]]) as usize;
+                let data_len =
+                    u16::from_be_bytes([client_hello[offset + 2], client_hello[offset + 3]])
+                        as usize;
                 offset += 4;
 
                 if offset + data_len <= client_hello.len() {
@@ -262,15 +266,14 @@ impl TlsClientHelloBuilder {
     }
 
     pub fn build(self) -> Result<Vec<u8>> {
-        let sni = self.server_name.unwrap_or_else(|| {
-            self.mimic_target.default_sni().to_string()
-        });
+        let sni = self
+            .server_name
+            .clone()
+            .unwrap_or_else(|| self.mimic_target.default_sni().to_string());
 
         let random: [u8; 32] = random_bytes(32).try_into().unwrap();
 
-        let session_id = self.session_id.unwrap_or_else(|| {
-            random_bytes(32)
-        });
+        let session_id = self.session_id.clone().unwrap_or_else(|| random_bytes(32));
 
         // Get cipher suites and extensions based on mimic target
         let (cipher_suites, extensions) = self.get_target_profile(&sni);
@@ -289,15 +292,9 @@ impl TlsClientHelloBuilder {
 
     fn get_target_profile(&self, sni: &str) -> (Vec<u16>, Vec<TlsExtension>) {
         match self.mimic_target {
-            MimicTarget::Rubika | MimicTarget::Eitaa => {
-                self.android_chrome_profile(sni)
-            }
-            MimicTarget::Chrome => {
-                self.chrome_desktop_profile(sni)
-            }
-            MimicTarget::Firefox => {
-                self.firefox_profile(sni)
-            }
+            MimicTarget::Rubika | MimicTarget::Eitaa => self.android_chrome_profile(sni),
+            MimicTarget::Chrome => self.chrome_desktop_profile(sni),
+            MimicTarget::Firefox => self.firefox_profile(sni),
             _ => self.android_chrome_profile(sni),
         }
     }
@@ -386,7 +383,7 @@ impl TlsClientHelloBuilder {
                 data: vec![
                     0x03, // Length
                     0x03, 0x04, // TLS 1.3
-                    //0x03, 0x03, // TLS 1.2
+                          //0x03, 0x03, // TLS 1.2
                 ],
             },
             // PSK Key Exchange Modes
@@ -435,8 +432,7 @@ impl TlsClientHelloBuilder {
             TlsExtension {
                 ext_type: extension_type::SUPPORTED_GROUPS,
                 data: vec![
-                    0x00, 0x06,
-                    0x00, 0x1d, // x25519
+                    0x00, 0x06, 0x00, 0x1d, // x25519
                     0x00, 0x17, // secp256r1
                     0x00, 0x18, // secp384r1
                 ],
@@ -452,16 +448,14 @@ impl TlsClientHelloBuilder {
             TlsExtension {
                 ext_type: extension_type::APPLICATION_LAYER_PROTOCOL_NEGOTIATION,
                 data: vec![
-                    0x00, 0x0c,
-                    0x02, b'h', b'2',
-                    0x08, b'h', b't', b't', b'p', b'/', b'1', b'.', b'1',
+                    0x00, 0x0c, 0x02, b'h', b'2', 0x08, b'h', b't', b't', b'p', b'/', b'1', b'.',
+                    b'1',
                 ],
             },
             TlsExtension {
                 ext_type: extension_type::SIGNATURE_ALGORITHMS,
                 data: vec![
-                    0x00, 0x10,
-                    0x04, 0x03, // ecdsa_secp256r1_sha256
+                    0x00, 0x10, 0x04, 0x03, // ecdsa_secp256r1_sha256
                     0x05, 0x03, // ecdsa_secp384r1_sha384
                     0x06, 0x03, // ecdsa_secp521r1_sha512
                     0x08, 0x04, // rsa_pss_rsae_sha256
@@ -474,8 +468,7 @@ impl TlsClientHelloBuilder {
             TlsExtension {
                 ext_type: extension_type::SUPPORTED_VERSIONS,
                 data: vec![
-                    0x03,
-                    0x03, 0x04, // TLS 1.3
+                    0x03, 0x03, 0x04, // TLS 1.3
                 ],
             },
             TlsExtension {
@@ -512,7 +505,7 @@ impl TlsClientHelloBuilder {
         let mut data = Vec::new();
         // Client key share length
         data.extend_from_slice(&(36u16).to_be_bytes()); // 2 + 2 + 32
-        // x25519 group
+                                                        // x25519 group
         data.extend_from_slice(&(0x001du16).to_be_bytes());
         // Key length
         data.extend_from_slice(&(32u16).to_be_bytes());

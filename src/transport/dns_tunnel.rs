@@ -31,11 +31,11 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 
 /// DNS header constants
-const DNS_FLAG_QUERY: u16 = 0x0100;        // Standard query, recursion desired
-const DNS_FLAG_RESPONSE: u16 = 0x8180;     // Standard response, recursion available
+const DNS_FLAG_QUERY: u16 = 0x0100; // Standard query, recursion desired
+const DNS_FLAG_RESPONSE: u16 = 0x8180; // Standard response, recursion available
 const DNS_TYPE_TXT: u16 = 16;
 const DNS_TYPE_CNAME: u16 = 5;
-const DNS_TYPE_NULL: u16 = 10;             // NULL record - allows arbitrary data
+const DNS_TYPE_NULL: u16 = 10; // NULL record - allows arbitrary data
 const DNS_CLASS_IN: u16 = 1;
 
 /// Maximum data per DNS query name (after base32 encoding, split across labels)
@@ -81,7 +81,8 @@ impl DnsTunnelTransport {
     /// * `bind_addr` - Local address to bind UDP socket
     /// * `tunnel_domain` - Domain suffix for tunnel queries (e.g., "t.example.com")
     pub async fn new(bind_addr: SocketAddr, tunnel_domain: String) -> Result<Self> {
-        let socket = UdpSocket::bind(bind_addr).await
+        let socket = UdpSocket::bind(bind_addr)
+            .await
             .map_err(|e| PhantomError::Socket(format!("DNS bind failed: {}", e)))?;
 
         Ok(Self {
@@ -123,15 +124,15 @@ impl DnsTunnelTransport {
         let mut packet = Vec::with_capacity(512);
 
         // DNS Header (12 bytes)
-        packet.extend_from_slice(&tx_id.to_be_bytes());       // Transaction ID
+        packet.extend_from_slice(&tx_id.to_be_bytes()); // Transaction ID
         packet.extend_from_slice(&DNS_FLAG_QUERY.to_be_bytes()); // Flags
-        packet.extend_from_slice(&1u16.to_be_bytes());         // Questions: 1
-        packet.extend_from_slice(&0u16.to_be_bytes());         // Answers: 0
-        packet.extend_from_slice(&0u16.to_be_bytes());         // Authority: 0
-        packet.extend_from_slice(&0u16.to_be_bytes());         // Additional: 0
+        packet.extend_from_slice(&1u16.to_be_bytes()); // Questions: 1
+        packet.extend_from_slice(&0u16.to_be_bytes()); // Answers: 0
+        packet.extend_from_slice(&0u16.to_be_bytes()); // Authority: 0
+        packet.extend_from_slice(&0u16.to_be_bytes()); // Additional: 0
 
         // Question section
-        packet.extend_from_slice(&encoded_name);               // QNAME
+        packet.extend_from_slice(&encoded_name); // QNAME
         packet.extend_from_slice(&DNS_TYPE_NULL.to_be_bytes()); // QTYPE: NULL
         packet.extend_from_slice(&DNS_CLASS_IN.to_be_bytes()); // QCLASS: IN
 
@@ -173,7 +174,11 @@ impl DnsTunnelTransport {
         let labels = parse_dns_labels(name_data)?;
 
         // Count how many labels belong to the tunnel domain
-        let domain_labels: Vec<&str> = self.tunnel_domain.split('.').filter(|s| !s.is_empty()).collect();
+        let domain_labels: Vec<&str> = self
+            .tunnel_domain
+            .split('.')
+            .filter(|s| !s.is_empty())
+            .collect();
         let domain_label_count = domain_labels.len();
 
         if labels.len() <= domain_label_count {
@@ -197,8 +202,8 @@ impl DnsTunnelTransport {
         // DNS Header
         packet.extend_from_slice(&tx_id.to_be_bytes());
         packet.extend_from_slice(&DNS_FLAG_RESPONSE.to_be_bytes());
-        packet.extend_from_slice(&1u16.to_be_bytes());         // Questions: 1
-        packet.extend_from_slice(&1u16.to_be_bytes());         // Answers: 1
+        packet.extend_from_slice(&1u16.to_be_bytes()); // Questions: 1
+        packet.extend_from_slice(&1u16.to_be_bytes()); // Answers: 1
         packet.extend_from_slice(&0u16.to_be_bytes());
         packet.extend_from_slice(&0u16.to_be_bytes());
 
@@ -243,7 +248,9 @@ impl DnsTunnelTransport {
         }
 
         if answer_count == 0 {
-            return Err(PhantomError::InvalidPacket("No answers in DNS response".into()));
+            return Err(PhantomError::InvalidPacket(
+                "No answers in DNS response".into(),
+            ));
         }
 
         // Skip question section
@@ -336,11 +343,15 @@ impl Transport for DnsTunnelTransport {
             self.encode_query(data)
         };
 
-        self.socket.send_to(&packet, dst).await
-            .map_err(|e| PhantomError::Io(e))?;
+        self.socket
+            .send_to(&packet, dst)
+            .await
+            .map_err(PhantomError::Io)?;
 
         self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
-        self.stats.bytes_sent.fetch_add(packet.len() as u64, Ordering::Relaxed);
+        self.stats
+            .bytes_sent
+            .fetch_add(packet.len() as u64, Ordering::Relaxed);
 
         Ok(data.len())
     }
@@ -349,8 +360,11 @@ impl Transport for DnsTunnelTransport {
         let mut raw_buf = [0u8; 4096];
 
         loop {
-            let (n, src) = self.socket.recv_from(&mut raw_buf).await
-                .map_err(|e| PhantomError::Io(e))?;
+            let (n, src) = self
+                .socket
+                .recv_from(&mut raw_buf)
+                .await
+                .map_err(PhantomError::Io)?;
 
             if n < 12 {
                 self.stats.packets_dropped.fetch_add(1, Ordering::Relaxed);
@@ -377,7 +391,9 @@ impl Transport for DnsTunnelTransport {
                     buf[..len].copy_from_slice(&data[..len]);
 
                     self.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
-                    self.stats.bytes_recv.fetch_add(len as u64, Ordering::Relaxed);
+                    self.stats
+                        .bytes_recv
+                        .fetch_add(len as u64, Ordering::Relaxed);
 
                     return Ok((len, src));
                 }
@@ -451,7 +467,7 @@ fn base32_decode(input: &str) -> Option<Vec<u8>> {
             'a'..='z' => (c as u8 - b'a') as u64,
             '2'..='7' => (c as u8 - b'2' + 26) as u64,
             'A'..='Z' => (c as u8 - b'A') as u64, // case-insensitive
-            '=' => continue, // padding
+            '=' => continue,                      // padding
             _ => return None,
         };
 
@@ -553,9 +569,12 @@ mod tests {
     fn test_dns_labels() {
         // Build a DNS name: "test.example.com\0"
         let mut name = Vec::new();
-        name.push(4); name.extend_from_slice(b"test");
-        name.push(7); name.extend_from_slice(b"example");
-        name.push(3); name.extend_from_slice(b"com");
+        name.push(4);
+        name.extend_from_slice(b"test");
+        name.push(7);
+        name.extend_from_slice(b"example");
+        name.push(3);
+        name.extend_from_slice(b"com");
         name.push(0);
 
         let labels = parse_dns_labels(&name).unwrap();

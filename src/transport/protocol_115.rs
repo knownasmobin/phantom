@@ -6,7 +6,7 @@
 //! This exploits the "infrastructure blind spot" - Protocol 115 is often
 //! used for router-to-router communication and may be whitelisted or ignored.
 
-use super::packet::{IpHeader, PacketBuilder, Packet, TransportHeader};
+use super::packet::{IpHeader, Packet, PacketBuilder};
 use super::raw_socket::RawSocket;
 use super::{Transport, TransportStats};
 use crate::config::TransportMode;
@@ -64,17 +64,32 @@ impl L2tpv3Header {
         // Check if cookie is present (we use 8-byte cookies)
         if data.len() >= 12 {
             let cookie = u64::from_be_bytes([
-                data[4], data[5], data[6], data[7],
-                data[8], data[9], data[10], data[11],
+                data[4], data[5], data[6], data[7], data[8], data[9], data[10], data[11],
             ]);
-            Ok((Self { session_id, cookie: Some(cookie) }, 12))
+            Ok((
+                Self {
+                    session_id,
+                    cookie: Some(cookie),
+                },
+                12,
+            ))
         } else {
-            Ok((Self { session_id, cookie: None }, 4))
+            Ok((
+                Self {
+                    session_id,
+                    cookie: None,
+                },
+                4,
+            ))
         }
     }
 
     pub fn size(&self) -> usize {
-        if self.cookie.is_some() { 12 } else { 4 }
+        if self.cookie.is_some() {
+            12
+        } else {
+            4
+        }
     }
 }
 
@@ -174,9 +189,10 @@ impl Protocol115Transport {
         let packet = Packet::from_bytes(data)?;
 
         if packet.ip.protocol != 115 {
-            return Err(PhantomError::InvalidPacket(
-                format!("Expected protocol 115, got {}", packet.ip.protocol)
-            ));
+            return Err(PhantomError::InvalidPacket(format!(
+                "Expected protocol 115, got {}",
+                packet.ip.protocol
+            )));
         }
 
         // Parse L2TPv3 header
@@ -218,7 +234,9 @@ impl Transport for Protocol115Transport {
         let sent = self.socket.send_to(&packet, dst).await?;
 
         self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
-        self.stats.bytes_sent.fetch_add(packet.len() as u64, Ordering::Relaxed);
+        self.stats
+            .bytes_sent
+            .fetch_add(packet.len() as u64, Ordering::Relaxed);
 
         Ok(data.len())
     }
@@ -239,7 +257,9 @@ impl Transport for Protocol115Transport {
                     buf[..len].copy_from_slice(&payload[..len]);
 
                     self.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
-                    self.stats.bytes_recv.fetch_add(len as u64, Ordering::Relaxed);
+                    self.stats
+                        .bytes_recv
+                        .fetch_add(len as u64, Ordering::Relaxed);
 
                     return Ok((len, SocketAddr::V4(SocketAddrV4::new(src_ip, 0))));
                 }

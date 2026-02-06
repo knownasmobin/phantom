@@ -1,20 +1,20 @@
 //! Packet structures and builders for raw packet crafting
 
 use crate::error::{PhantomError, Result};
-use crate::utils::{internet_checksum, tcp_checksum, icmp_checksum, random_u16, random_u32};
+use crate::utils::{icmp_checksum, internet_checksum, random_u16, random_u32, tcp_checksum};
 use std::net::Ipv4Addr;
 
 /// IP Header (20 bytes without options)
 #[derive(Debug, Clone)]
 pub struct IpHeader {
-    pub version: u8,           // 4 bits
-    pub ihl: u8,               // 4 bits (header length in 32-bit words)
-    pub dscp: u8,              // 6 bits
-    pub ecn: u8,               // 2 bits
+    pub version: u8, // 4 bits
+    pub ihl: u8,     // 4 bits (header length in 32-bit words)
+    pub dscp: u8,    // 6 bits
+    pub ecn: u8,     // 2 bits
     pub total_length: u16,
     pub identification: u16,
-    pub flags: u8,             // 3 bits
-    pub fragment_offset: u16,  // 13 bits
+    pub flags: u8,            // 3 bits
+    pub fragment_offset: u16, // 13 bits
     pub ttl: u8,
     pub protocol: u8,
     pub checksum: u16,
@@ -72,7 +72,10 @@ impl IpHeader {
         let ihl = data[0] & 0x0F;
 
         if version != 4 {
-            return Err(PhantomError::PacketParse(format!("Invalid IP version: {}", version)));
+            return Err(PhantomError::PacketParse(format!(
+                "Invalid IP version: {}",
+                version
+            )));
         }
 
         let flags_frag = u16::from_be_bytes([data[6], data[7]]);
@@ -108,8 +111,8 @@ pub struct TcpHeader {
     pub dst_port: u16,
     pub seq_num: u32,
     pub ack_num: u32,
-    pub data_offset: u8,   // 4 bits (header length in 32-bit words)
-    pub reserved: u8,      // 3 bits
+    pub data_offset: u8, // 4 bits (header length in 32-bit words)
+    pub reserved: u8,    // 3 bits
     pub flags: TcpFlags,
     pub window: u16,
     pub checksum: u16,
@@ -131,46 +134,85 @@ pub struct TcpFlags {
 
 impl TcpFlags {
     pub fn syn() -> Self {
-        Self { syn: true, ..Default::default() }
+        Self {
+            syn: true,
+            ..Default::default()
+        }
     }
 
     pub fn syn_ack() -> Self {
-        Self { syn: true, ack: true, ..Default::default() }
+        Self {
+            syn: true,
+            ack: true,
+            ..Default::default()
+        }
     }
 
     pub fn ack() -> Self {
-        Self { ack: true, ..Default::default() }
+        Self {
+            ack: true,
+            ..Default::default()
+        }
     }
 
     pub fn psh_ack() -> Self {
-        Self { psh: true, ack: true, ..Default::default() }
+        Self {
+            psh: true,
+            ack: true,
+            ..Default::default()
+        }
     }
 
     pub fn fin_ack() -> Self {
-        Self { fin: true, ack: true, ..Default::default() }
+        Self {
+            fin: true,
+            ack: true,
+            ..Default::default()
+        }
     }
 
     pub fn rst() -> Self {
-        Self { rst: true, ..Default::default() }
+        Self {
+            rst: true,
+            ..Default::default()
+        }
     }
 
     pub fn to_u16(&self) -> u16 {
         let mut flags: u16 = 0;
-        if self.ns  { flags |= 0x100; }
-        if self.cwr { flags |= 0x080; }
-        if self.ece { flags |= 0x040; }
-        if self.urg { flags |= 0x020; }
-        if self.ack { flags |= 0x010; }
-        if self.psh { flags |= 0x008; }
-        if self.rst { flags |= 0x004; }
-        if self.syn { flags |= 0x002; }
-        if self.fin { flags |= 0x001; }
+        if self.ns {
+            flags |= 0x100;
+        }
+        if self.cwr {
+            flags |= 0x080;
+        }
+        if self.ece {
+            flags |= 0x040;
+        }
+        if self.urg {
+            flags |= 0x020;
+        }
+        if self.ack {
+            flags |= 0x010;
+        }
+        if self.psh {
+            flags |= 0x008;
+        }
+        if self.rst {
+            flags |= 0x004;
+        }
+        if self.syn {
+            flags |= 0x002;
+        }
+        if self.fin {
+            flags |= 0x001;
+        }
         flags
     }
 
     pub fn from_u16(flags: u16) -> Self {
         Self {
-            ns:  flags & 0x100 != 0,
+            ns: flags & 0x100 != 0,
             cwr: flags & 0x080 != 0,
             ece: flags & 0x040 != 0,
             urg: flags & 0x020 != 0,
@@ -399,7 +441,11 @@ impl Packet {
             Vec::new()
         };
 
-        Ok(Self { ip, transport, payload })
+        Ok(Self {
+            ip,
+            transport,
+            payload,
+        })
     }
 }
 
@@ -501,7 +547,11 @@ mod tests {
 
     #[test]
     fn test_ip_header_roundtrip() {
-        let mut ip = IpHeader::new(6, "192.168.1.1".parse().unwrap(), "10.0.0.1".parse().unwrap());
+        let mut ip = IpHeader::new(
+            6,
+            "192.168.1.1".parse().unwrap(),
+            "10.0.0.1".parse().unwrap(),
+        );
         ip.total_length = 60;
         ip.calculate_checksum();
 

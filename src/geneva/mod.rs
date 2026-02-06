@@ -9,15 +9,14 @@
 //! - TTL Manipulation: Expire packets at middlebox but not server
 //! - Flag Manipulation: Confuse state tracking with unexpected flags
 
-pub mod strategies;
 pub mod engine;
+pub mod strategies;
 
 pub use engine::GenevaEngine;
 pub use strategies::*;
 
 use crate::config::GenevaStrategy;
 use crate::error::Result;
-use crate::transport::packet::{Packet, TcpFlags};
 use std::net::Ipv4Addr;
 
 /// Action to take on a packet

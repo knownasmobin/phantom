@@ -7,17 +7,20 @@
 //! By mimicking their TLS fingerprint, we can get our connection whitelisted
 //! even though it's going to a different server.
 
-pub mod tls;
 pub mod fingerprint;
+pub mod tls;
 
-pub use tls::{TlsClientHello, TlsClientHelloBuilder};
 pub use fingerprint::{Fingerprint, FingerprintGenerator};
+pub use tls::{TlsClientHello, TlsClientHelloBuilder};
 
-use crate::config::{HandshakeConfig, MimicTarget};
+use crate::config::HandshakeConfig;
 use crate::error::Result;
 
 /// Generate a TLS ClientHello that mimics the specified target
-pub fn generate_client_hello(config: &HandshakeConfig, server_name: Option<&str>) -> Result<Vec<u8>> {
+pub fn generate_client_hello(
+    config: &HandshakeConfig,
+    server_name: Option<&str>,
+) -> Result<Vec<u8>> {
     let sni = server_name.unwrap_or(&config.spoof_sni);
 
     let builder = TlsClientHelloBuilder::new()

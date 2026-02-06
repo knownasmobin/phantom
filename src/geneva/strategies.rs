@@ -2,9 +2,8 @@
 
 use super::{Direction, PacketAction, PacketContext, Strategy};
 use crate::config::GenevaStrategy;
-use crate::error::{PhantomError, Result};
-use crate::transport::packet::{IpHeader, TcpHeader, TcpFlags, Packet, TransportHeader};
-use crate::utils::{internet_checksum, tcp_checksum};
+use crate::error::Result;
+use crate::transport::packet::{IpHeader, Packet, TcpFlags, TcpHeader, TransportHeader};
 
 /// TCP Segmentation Strategy
 ///
@@ -36,7 +35,7 @@ impl Strategy for TcpSegmentationStrategy {
     }
 
     fn apply(&self, packet: &[u8], ctx: &PacketContext) -> Result<PacketAction> {
-        let mut pkt = Packet::from_bytes(packet)?;
+        let pkt = Packet::from_bytes(packet)?;
 
         // Only apply to TCP packets with payload
         if pkt.ip.protocol != 6 || pkt.payload.is_empty() {
@@ -107,7 +106,7 @@ impl Strategy for ChecksumPoisoningStrategy {
     }
 
     fn apply(&self, packet: &[u8], ctx: &PacketContext) -> Result<PacketAction> {
-        let mut pkt = Packet::from_bytes(packet)?;
+        let pkt = Packet::from_bytes(packet)?;
 
         if pkt.ip.protocol != 6 {
             return Ok(PacketAction::Send(packet.to_vec()));
@@ -135,7 +134,10 @@ impl Strategy for ChecksumPoisoningStrategy {
         poisoned_data.extend_from_slice(&poisoned.payload);
 
         // Send poisoned packet first, then real packet
-        Ok(PacketAction::SendMultiple(vec![poisoned_data, packet.to_vec()]))
+        Ok(PacketAction::SendMultiple(vec![
+            poisoned_data,
+            packet.to_vec(),
+        ]))
     }
 
     fn applies_to(&self, packet: &[u8], ctx: &PacketContext) -> bool {
@@ -216,7 +218,10 @@ impl Strategy for TtlExpiryStrategy {
         decoy_data.extend_from_slice(&decoy_tcp.to_bytes());
 
         // Send decoy first, then real packet
-        Ok(PacketAction::SendMultiple(vec![decoy_data, packet.to_vec()]))
+        Ok(PacketAction::SendMultiple(vec![
+            decoy_data,
+            packet.to_vec(),
+        ]))
     }
 
     fn applies_to(&self, packet: &[u8], ctx: &PacketContext) -> bool {
@@ -437,15 +442,14 @@ mod tests {
     use std::net::Ipv4Addr;
 
     fn make_test_packet() -> Vec<u8> {
-        let mut packet = PacketBuilder::new(6,
-            Ipv4Addr::new(192, 168, 1, 1),
-            Ipv4Addr::new(10, 0, 0, 1))
-            .tcp(12345, 443)
-            .tcp_flags(TcpFlags::psh_ack())
-            .tcp_seq(1000)
-            .tcp_ack(2000)
-            .payload(b"Hello, World! This is test data for segmentation.")
-            .build();
+        let mut packet =
+            PacketBuilder::new(6, Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(10, 0, 0, 1))
+                .tcp(12345, 443)
+                .tcp_flags(TcpFlags::psh_ack())
+                .tcp_seq(1000)
+                .tcp_ack(2000)
+                .payload(b"Hello, World! This is test data for segmentation.")
+                .build();
         packet.to_bytes()
     }
 

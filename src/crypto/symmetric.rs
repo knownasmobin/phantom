@@ -42,11 +42,19 @@ impl Cipher {
         let nonce = XNonce::from_slice(&nonce_bytes);
 
         let payload = match aad {
-            Some(ad) => Payload { msg: plaintext, aad: ad },
-            None => Payload { msg: plaintext, aad: &[] },
+            Some(ad) => Payload {
+                msg: plaintext,
+                aad: ad,
+            },
+            None => Payload {
+                msg: plaintext,
+                aad: &[],
+            },
         };
 
-        let ciphertext = self.cipher.encrypt(nonce, payload)
+        let ciphertext = self
+            .cipher
+            .encrypt(nonce, payload)
             .map_err(|_| PhantomError::Encryption("Encryption failed".into()))?;
 
         // Prepend nonce to ciphertext
@@ -67,11 +75,18 @@ impl Cipher {
         let nonce = XNonce::from_slice(nonce);
 
         let payload = match aad {
-            Some(ad) => Payload { msg: plaintext, aad: ad },
-            None => Payload { msg: plaintext, aad: &[] },
+            Some(ad) => Payload {
+                msg: plaintext,
+                aad: ad,
+            },
+            None => Payload {
+                msg: plaintext,
+                aad: &[],
+            },
         };
 
-        self.cipher.encrypt(nonce, payload)
+        self.cipher
+            .encrypt(nonce, payload)
             .map_err(|_| PhantomError::Encryption("Encryption failed".into()))
     }
 
@@ -91,7 +106,8 @@ impl Cipher {
             None => Payload { msg: ct, aad: &[] },
         };
 
-        self.cipher.decrypt(nonce, payload)
+        self.cipher
+            .decrypt(nonce, payload)
             .map_err(|_| PhantomError::Decryption("Decryption failed".into()))
     }
 
@@ -105,11 +121,18 @@ impl Cipher {
         let nonce = XNonce::from_slice(nonce);
 
         let payload = match aad {
-            Some(ad) => Payload { msg: ciphertext, aad: ad },
-            None => Payload { msg: ciphertext, aad: &[] },
+            Some(ad) => Payload {
+                msg: ciphertext,
+                aad: ad,
+            },
+            None => Payload {
+                msg: ciphertext,
+                aad: &[],
+            },
         };
 
-        self.cipher.decrypt(nonce, payload)
+        self.cipher
+            .decrypt(nonce, payload)
             .map_err(|_| PhantomError::Decryption("Decryption failed".into()))
     }
 }
@@ -135,7 +158,7 @@ pub fn derive_keys(master: &[u8; 32], info: &[u8], num_keys: usize) -> Vec<[u8; 
         let mut hasher = Blake2b512::new();
         hasher.update(master);
         hasher.update(info);
-        hasher.update(&[counter]);
+        hasher.update([counter]);
         let result = hasher.finalize();
 
         let mut key = [0u8; 32];

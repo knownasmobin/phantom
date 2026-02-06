@@ -47,7 +47,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use parking_lot::RwLock;
+use tokio::sync::Mutex;
 
 /// HTTP smuggling desync modes
 ///
@@ -74,13 +74,13 @@ pub enum SmuggleMode {
 /// but are accepted by tolerant HTTP servers
 const TE_OBFUSCATIONS: &[&str] = &[
     "Transfer-Encoding: chunked",
-    "Transfer-Encoding : chunked",           // Space before colon
-    "Transfer-Encoding: chunked\r\nX: ",     // Continuation
-    "Transfer-Encoding:\tchunked",           // Tab instead of space
-    "Transfer-Encoding: xchunked",           // Some parsers strip 'x' prefix
-    "Transfer-encoding: chunked",            // Lowercase
-    "Transfer-Encoding: chunked\x00",        // Null byte
-    " Transfer-Encoding: chunked",           // Leading space
+    "Transfer-Encoding : chunked",       // Space before colon
+    "Transfer-Encoding: chunked\r\nX: ", // Continuation
+    "Transfer-Encoding:\tchunked",       // Tab instead of space
+    "Transfer-Encoding: xchunked",       // Some parsers strip 'x' prefix
+    "Transfer-encoding: chunked",        // Lowercase
+    "Transfer-Encoding: chunked\x00",    // Null byte
+    " Transfer-Encoding: chunked",       // Leading space
 ];
 
 /// Case-sensitive Host header bypasses for Iranian domains
@@ -98,7 +98,7 @@ const IRAN_HOST_BYPASSES: &[&str] = &[
 /// HTTP Request Smuggling Transport
 pub struct HttpSmuggleTransport {
     /// TCP connection to the tunnel server
-    stream: Arc<RwLock<Option<TcpStream>>>,
+    stream: Arc<Mutex<Option<TcpStream>>>,
     /// Remote server address
     remote_addr: SocketAddr,
     /// Smuggling mode
@@ -129,7 +129,7 @@ impl HttpSmuggleTransport {
     /// Create a new HTTP smuggling transport
     pub async fn new(remote_addr: SocketAddr) -> Result<Self> {
         Ok(Self {
-            stream: Arc::new(RwLock::new(None)),
+            stream: Arc::new(Mutex::new(None)),
             remote_addr,
             mode: SmuggleMode::ClTe,
             host_header: IRAN_HOST_BYPASSES[0].to_string(),
@@ -169,21 +169,19 @@ impl HttpSmuggleTransport {
 
     /// Ensure TCP connection is established
     async fn ensure_connected(&self) -> Result<()> {
-        let needs_connect = {
-            let guard = self.stream.read();
-            guard.is_none()
-        };
+        let needs_connect = self.stream.lock().await.is_none();
 
         if needs_connect {
-            let stream = TcpStream::connect(self.remote_addr).await
+            let stream = TcpStream::connect(self.remote_addr)
+                .await
                 .map_err(|e| PhantomError::Socket(format!("HTTP connect failed: {}", e)))?;
 
             // Set TCP_NODELAY for lower latency
-            stream.set_nodelay(true)
+            stream
+                .set_nodelay(true)
                 .map_err(|e| PhantomError::Socket(format!("TCP_NODELAY failed: {}", e)))?;
 
-            let mut guard = self.stream.write();
-            *guard = Some(stream);
+            *self.stream.lock().await = Some(stream);
         }
 
         Ok(())
@@ -252,11 +250,7 @@ impl HttpSmuggleTransport {
              0\r\n\
              \r\n\
              {}",
-            self.path,
-            self.host_header,
-            te_header,
-            content_length,
-            smuggled_data,
+            self.path, self.host_header, te_header, content_length, smuggled_data,
         );
 
         request.into_bytes()
@@ -310,8 +304,12 @@ impl HttpSmuggleTransport {
         // Check if response uses chunked encoding
         let headers_str = String::from_utf8_lossy(headers);
 
-        if headers_str.to_lowercase().contains("transfer-encoding: chunked")
-            || headers_str.to_lowercase().contains("transfer-encoding:chunked")
+        if headers_str
+            .to_lowercase()
+            .contains("transfer-encoding: chunked")
+            || headers_str
+                .to_lowercase()
+                .contains("transfer-encoding:chunked")
         {
             // Decode chunked body
             let (decoded, consumed) = decode_chunked(body)?;
@@ -340,13 +338,14 @@ impl Transport for HttpSmuggleTransport {
 
         let request = self.build_request(data);
 
-        let mut guard = self.stream.write();
+        let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
-            stream.write_all(&request).await
-                .map_err(|e| PhantomError::Io(e))?;
+            stream.write_all(&request).await.map_err(PhantomError::Io)?;
 
             self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
-            self.stats.bytes_sent.fetch_add(request.len() as u64, Ordering::Relaxed);
+            self.stats
+                .bytes_sent
+                .fetch_add(request.len() as u64, Ordering::Relaxed);
             self.request_id.fetch_add(1, Ordering::Relaxed);
 
             Ok(data.len())
@@ -360,10 +359,9 @@ impl Transport for HttpSmuggleTransport {
 
         let mut raw_buf = [0u8; 65535];
 
-        let mut guard = self.stream.write();
+        let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
-            let n = stream.read(&mut raw_buf).await
-                .map_err(|e| PhantomError::Io(e))?;
+            let n = stream.read(&mut raw_buf).await.map_err(PhantomError::Io)?;
 
             if n == 0 {
                 // Connection closed - need to reconnect
@@ -377,7 +375,9 @@ impl Transport for HttpSmuggleTransport {
                     buf[..len].copy_from_slice(&data[..len]);
 
                     self.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
-                    self.stats.bytes_recv.fetch_add(len as u64, Ordering::Relaxed);
+                    self.stats
+                        .bytes_recv
+                        .fetch_add(len as u64, Ordering::Relaxed);
 
                     Ok((len, self.remote_addr))
                 }
@@ -393,7 +393,7 @@ impl Transport for HttpSmuggleTransport {
 
     async fn close(&self) -> Result<()> {
         self.running.store(false, Ordering::SeqCst);
-        let mut guard = self.stream.write();
+        let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
             let _ = stream.shutdown().await;
         }
@@ -402,7 +402,7 @@ impl Transport for HttpSmuggleTransport {
     }
 
     fn is_healthy(&self) -> bool {
-        self.running.load(Ordering::SeqCst) && self.stream.read().is_some()
+        self.running.load(Ordering::SeqCst)
     }
 
     fn stats(&self) -> TransportStats {
@@ -470,7 +470,9 @@ fn decode_chunked(data: &[u8]) -> Result<(Vec<u8>, usize)> {
         }
 
         if offset + chunk_size > data.len() {
-            return Err(PhantomError::PacketParse("Chunk data exceeds buffer".into()));
+            return Err(PhantomError::PacketParse(
+                "Chunk data exceeds buffer".into(),
+            ));
         }
 
         result.extend_from_slice(&data[offset..offset + chunk_size]);
@@ -483,8 +485,7 @@ fn decode_chunked(data: &[u8]) -> Result<(Vec<u8>, usize)> {
 /// Find `\r\n\r\n` in data (end of HTTP headers)
 fn find_header_end(data: &[u8]) -> Option<usize> {
     for i in 0..data.len().saturating_sub(3) {
-        if data[i] == b'\r' && data[i + 1] == b'\n'
-            && data[i + 2] == b'\r' && data[i + 3] == b'\n'
+        if data[i] == b'\r' && data[i + 1] == b'\n' && data[i + 2] == b'\r' && data[i + 3] == b'\n'
         {
             return Some(i + 4);
         }
@@ -494,12 +495,7 @@ fn find_header_end(data: &[u8]) -> Option<usize> {
 
 /// Find `\r\n` in data
 fn find_crlf(data: &[u8]) -> Option<usize> {
-    for i in 0..data.len().saturating_sub(1) {
-        if data[i] == b'\r' && data[i + 1] == b'\n' {
-            return Some(i);
-        }
-    }
-    None
+    (0..data.len().saturating_sub(1)).find(|&i| data[i] == b'\r' && data[i + 1] == b'\n')
 }
 
 /// Extract Content-Length value from HTTP headers
@@ -516,8 +512,13 @@ fn extract_content_length(headers: &str) -> Option<usize> {
 
 /// Simple hex encoding for TE/CL mode data
 mod hex {
+    use std::fmt::Write;
+
     pub fn encode(data: &[u8]) -> String {
-        data.iter().map(|b| format!("{:02x}", b)).collect()
+        data.iter().fold(String::new(), |mut s, b| {
+            write!(s, "{:02x}", b).unwrap();
+            s
+        })
     }
 
     #[allow(dead_code)]
@@ -573,7 +574,7 @@ mod tests {
     #[test]
     fn test_cl_te_desync_structure() {
         let transport = HttpSmuggleTransport {
-            stream: Arc::new(RwLock::new(None)),
+            stream: Arc::new(Mutex::new(None)),
             remote_addr: "127.0.0.1:80".parse().unwrap(),
             mode: SmuggleMode::ClTe,
             host_header: "Rubika.ir".to_string(),

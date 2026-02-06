@@ -29,7 +29,8 @@ impl RawSocket {
             Domain::IPV4,
             Type::RAW,
             Some(Protocol::from(protocol as i32)),
-        ).map_err(|e| {
+        )
+        .map_err(|e| {
             if e.raw_os_error() == Some(1) {
                 // EPERM
                 PhantomError::InsufficientPrivileges
@@ -40,16 +41,19 @@ impl RawSocket {
 
         // Set IP_HDRINCL to craft our own IP headers
         if include_ip_header {
-            socket.set_header_included(true)
+            socket
+                .set_header_included_v4(true)
                 .map_err(|e| PhantomError::Socket(format!("Failed to set IP_HDRINCL: {}", e)))?;
         }
 
         // Set non-blocking for async
-        socket.set_nonblocking(true)
+        socket
+            .set_nonblocking(true)
             .map_err(|e| PhantomError::Socket(format!("Failed to set non-blocking: {}", e)))?;
 
         // Enable address reuse
-        socket.set_reuse_address(true)
+        socket
+            .set_reuse_address(true)
             .map_err(|e| PhantomError::Socket(format!("Failed to set SO_REUSEADDR: {}", e)))?;
 
         let async_fd = AsyncFd::new(socket)
@@ -81,7 +85,9 @@ impl RawSocket {
     /// Bind the socket to a local address
     pub fn bind(&self, addr: SocketAddr) -> Result<()> {
         let socket_addr: socket2::SockAddr = addr.into();
-        self.inner.get_ref().bind(&socket_addr)
+        self.inner
+            .get_ref()
+            .bind(&socket_addr)
             .map_err(|e| PhantomError::Socket(format!("Bind failed: {}", e)))
     }
 
@@ -91,7 +97,10 @@ impl RawSocket {
     /// Otherwise, it should be just the payload.
     pub async fn send_to(&self, data: &[u8], dst: SocketAddr) -> Result<usize> {
         loop {
-            let mut guard = self.inner.ready(Interest::WRITABLE).await
+            let mut guard = self
+                .inner
+                .ready(Interest::WRITABLE)
+                .await
                 .map_err(|e| PhantomError::Socket(format!("Async ready failed: {}", e)))?;
 
             match guard.try_io(|inner| {
@@ -99,7 +108,7 @@ impl RawSocket {
                 inner.get_ref().send_to(data, &socket_addr)
             }) {
                 Ok(result) => {
-                    return result.map_err(|e| PhantomError::Io(e));
+                    return result.map_err(PhantomError::Io);
                 }
                 Err(_would_block) => continue,
             }
@@ -112,24 +121,30 @@ impl RawSocket {
     /// If IP_HDRINCL is set, the returned data includes the IP header.
     pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
         loop {
-            let mut guard = self.inner.ready(Interest::READABLE).await
+            let mut guard = self
+                .inner
+                .ready(Interest::READABLE)
+                .await
                 .map_err(|e| PhantomError::Socket(format!("Async ready failed: {}", e)))?;
 
             match guard.try_io(|inner| {
-                let mut storage = std::mem::MaybeUninit::<socket2::SockAddr>::uninit();
-                inner.get_ref().recv_from(unsafe {
-                    std::slice::from_raw_parts_mut(buf.as_mut_ptr(), buf.len())
-                })
+                let mut recv_buf = vec![std::mem::MaybeUninit::<u8>::uninit(); buf.len()];
+                let (n, _addr) = inner.get_ref().recv_from(&mut recv_buf)?;
+                for i in 0..n {
+                    buf[i] = unsafe { recv_buf[i].assume_init() };
+                }
+                Ok(n)
             }) {
                 Ok(result) => {
-                    let (n, addr) = result.map_err(|e| PhantomError::Io(e))?;
-                    // Extract source address from the received packet if needed
-                    // For raw sockets, we parse the IP header
+                    let n = result.map_err(PhantomError::Io)?;
                     if self.include_ip_header && n >= 20 {
                         let src_ip = Ipv4Addr::new(buf[12], buf[13], buf[14], buf[15]);
                         return Ok((n, SocketAddr::V4(SocketAddrV4::new(src_ip, 0))));
                     }
-                    return Ok((n, SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0))));
+                    return Ok((
+                        n,
+                        SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
+                    ));
                 }
                 Err(_would_block) => continue,
             }

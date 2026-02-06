@@ -4,17 +4,17 @@
 //!   phantom-client --config <path> --remote <ip:port>
 //!   phantom-client --remote <ip:port> --server-key <base64>
 
-use phantom::{Config, PhantomError, Result};
 use phantom::config::{Mode, TransportMode};
 use phantom::crypto::{KeyPair, PublicKey};
-use phantom::tunnel::{PhantomTunnel, TunnelBuilder, TunnelState};
+use phantom::tunnel::{PhantomTunnel, TunnelBuilder};
+use phantom::{Config, PhantomError, Result};
 
 use clap::Parser;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tracing::{info, error, debug, warn};
+use tracing::{debug, error, info, warn};
 
 #[derive(Parser, Debug)]
 #[command(name = "phantom-client")]
@@ -60,9 +60,7 @@ async fn main() -> Result<()> {
 
     // Initialize logging
     let log_level = if args.verbose { "debug" } else { "info" };
-    tracing_subscriber::fmt()
-        .with_env_filter(log_level)
-        .init();
+    tracing_subscriber::fmt().with_env_filter(log_level).init();
 
     info!("Phantom Client starting...");
     info!("Remote server: {}", args.remote);
@@ -96,7 +94,10 @@ async fn main() -> Result<()> {
         "icmp" => TransportMode::Icmp,
         _ => {
             error!("Unknown transport mode: {}", args.transport);
-            return Err(PhantomError::Config(format!("Unknown transport: {}", args.transport)));
+            return Err(PhantomError::Config(format!(
+                "Unknown transport: {}",
+                args.transport
+            )));
         }
     };
 
@@ -129,21 +130,27 @@ async fn main() -> Result<()> {
     tunnel.connect(args.remote).await?;
 
     let stats = tunnel.stats();
-    info!("Connected! Handshake completed in {}ms", stats.handshake_time_ms);
+    info!(
+        "Connected! Handshake completed in {}ms",
+        stats.handshake_time_ms
+    );
     info!("Using transport: {:?}", stats.current_transport);
 
     // Start local SOCKS5 proxy
     let listen_addr: SocketAddr = format!("127.0.0.1:{}", args.listen).parse().unwrap();
-    let listener = TcpListener::bind(listen_addr).await
-        .map_err(|e| PhantomError::Io(e))?;
+    let listener = TcpListener::bind(listen_addr)
+        .await
+        .map_err(PhantomError::Io)?;
 
     info!("SOCKS5 proxy listening on {}", listen_addr);
-    info!("Configure your applications to use SOCKS5 proxy at 127.0.0.1:{}", args.listen);
+    info!(
+        "Configure your applications to use SOCKS5 proxy at 127.0.0.1:{}",
+        args.listen
+    );
 
     // Handle incoming connections
     loop {
-        let (socket, client_addr) = listener.accept().await
-            .map_err(|e| PhantomError::Io(e))?;
+        let (socket, client_addr) = listener.accept().await.map_err(PhantomError::Io)?;
 
         debug!("New connection from {}", client_addr);
 
@@ -167,16 +174,19 @@ async fn handle_socks5_connection(
     let mut buf = [0u8; 1024];
 
     // SOCKS5 handshake
-    let n = socket.read(&mut buf).await.map_err(|e| PhantomError::Io(e))?;
+    let n = socket.read(&mut buf).await.map_err(PhantomError::Io)?;
     if n < 2 || buf[0] != 0x05 {
         return Err(PhantomError::Protocol("Invalid SOCKS5 handshake".into()));
     }
 
     // Send response (no auth required)
-    socket.write_all(&[0x05, 0x00]).await.map_err(|e| PhantomError::Io(e))?;
+    socket
+        .write_all(&[0x05, 0x00])
+        .await
+        .map_err(PhantomError::Io)?;
 
     // Read connection request
-    let n = socket.read(&mut buf).await.map_err(|e| PhantomError::Io(e))?;
+    let n = socket.read(&mut buf).await.map_err(PhantomError::Io)?;
     if n < 4 || buf[0] != 0x05 || buf[1] != 0x01 {
         return Err(PhantomError::Protocol("Invalid SOCKS5 request".into()));
     }
@@ -214,8 +224,10 @@ async fn handle_socks5_connection(
     debug!("SOCKS5 connect to {}:{}", dest_addr, dest_port);
 
     // Send success response
-    socket.write_all(&[0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
-        .await.map_err(|e| PhantomError::Io(e))?;
+    socket
+        .write_all(&[0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
+        .await
+        .map_err(PhantomError::Io)?;
 
     // Create connection header for the tunnel
     let connect_request = format!("CONNECT {}:{}\r\n", dest_addr, dest_port);
@@ -245,14 +257,9 @@ async fn handle_socks5_connection(
     let tunnel_recv = tunnel.clone();
     let recv_task = tokio::spawn(async move {
         let mut buf = vec![0u8; 16384];
-        loop {
-            match tunnel_recv.recv(&mut buf).await {
-                Ok((n, _)) => {
-                    if write_half.write_all(&buf[..n]).await.is_err() {
-                        break;
-                    }
-                }
-                Err(_) => break,
+        while let Ok((n, _)) = tunnel_recv.recv(&mut buf).await {
+            if write_half.write_all(&buf[..n]).await.is_err() {
+                break;
             }
         }
     });

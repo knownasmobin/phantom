@@ -12,11 +12,11 @@
 //!   -> e, es, s, ss
 //!   <- e, ee, se
 
+use crate::crypto::keys::{KeyPair, PreSharedKey, PublicKey};
 use crate::error::{PhantomError, Result};
-use crate::crypto::keys::{KeyPair, PublicKey, PreSharedKey};
+use parking_lot::Mutex;
 use snow::{Builder, HandshakeState, TransportState};
 use std::sync::Arc;
-use parking_lot::Mutex;
 
 /// Noise protocol pattern
 const NOISE_PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2b";
@@ -65,8 +65,9 @@ impl NoiseSession {
         remote_public: PublicKey,
         psk: Option<PreSharedKey>,
     ) -> Result<Self> {
+        let private_key_bytes = local_keypair.private.as_bytes();
         let mut builder = Builder::new(NOISE_PATTERN.parse().unwrap())
-            .local_private_key(&local_keypair.private.as_bytes())
+            .local_private_key(&private_key_bytes)
             .remote_public_key(remote_public.as_bytes());
 
         if let Some(ref psk) = psk {
@@ -89,12 +90,10 @@ impl NoiseSession {
     }
 
     /// Create a new session as responder (server)
-    pub fn new_responder(
-        local_keypair: KeyPair,
-        psk: Option<PreSharedKey>,
-    ) -> Result<Self> {
-        let mut builder = Builder::new(NOISE_PATTERN.parse().unwrap())
-            .local_private_key(&local_keypair.private.as_bytes());
+    pub fn new_responder(local_keypair: KeyPair, psk: Option<PreSharedKey>) -> Result<Self> {
+        let private_key_bytes = local_keypair.private.as_bytes();
+        let mut builder =
+            Builder::new(NOISE_PATTERN.parse().unwrap()).local_private_key(&private_key_bytes);
 
         if let Some(ref psk) = psk {
             builder = builder.psk(0, psk.as_bytes());
@@ -129,7 +128,9 @@ impl NoiseSession {
     ///
     /// Can include an optional payload that will be encrypted
     pub fn write_handshake(&mut self, payload: &[u8]) -> Result<Vec<u8>> {
-        let handshake = self.handshake.as_mut()
+        let handshake = self
+            .handshake
+            .as_mut()
             .ok_or_else(|| PhantomError::InvalidState("No handshake state".into()))?;
 
         let mut message = vec![0u8; MAX_MESSAGE_SIZE];
@@ -153,7 +154,9 @@ impl NoiseSession {
     ///
     /// Returns the decrypted payload if present
     pub fn read_handshake(&mut self, message: &[u8]) -> Result<Vec<u8>> {
-        let handshake = self.handshake.as_mut()
+        let handshake = self
+            .handshake
+            .as_mut()
             .ok_or_else(|| PhantomError::InvalidState("No handshake state".into()))?;
 
         let mut payload = vec![0u8; MAX_MESSAGE_SIZE];
@@ -176,11 +179,15 @@ impl NoiseSession {
 
     /// Finalize the handshake and transition to transport mode
     fn finalize_handshake(&mut self) -> Result<()> {
-        let handshake = self.handshake.take()
+        let handshake = self
+            .handshake
+            .take()
             .ok_or_else(|| PhantomError::InvalidState("No handshake state".into()))?;
 
         if !handshake.is_handshake_finished() {
-            return Err(PhantomError::HandshakeFailed("Handshake not complete".into()));
+            return Err(PhantomError::HandshakeFailed(
+                "Handshake not complete".into(),
+            ));
         }
 
         // Get remote public key if we're responder
@@ -202,7 +209,9 @@ impl NoiseSession {
 
     /// Encrypt a message in transport mode
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>> {
-        let transport = self.transport.as_mut()
+        let transport = self
+            .transport
+            .as_mut()
             .ok_or_else(|| PhantomError::InvalidState("Not in transport mode".into()))?;
 
         let mut ciphertext = vec![0u8; plaintext.len() + TRANSPORT_OVERHEAD];
@@ -216,7 +225,9 @@ impl NoiseSession {
 
     /// Decrypt a message in transport mode
     pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>> {
-        let transport = self.transport.as_mut()
+        let transport = self
+            .transport
+            .as_mut()
             .ok_or_else(|| PhantomError::InvalidState("Not in transport mode".into()))?;
 
         let mut plaintext = vec![0u8; ciphertext.len()];
@@ -245,7 +256,9 @@ impl NoiseSession {
 
     /// Rekey the session (for forward secrecy)
     pub fn rekey(&mut self) -> Result<()> {
-        let transport = self.transport.as_mut()
+        let transport = self
+            .transport
+            .as_mut()
             .ok_or_else(|| PhantomError::InvalidState("Not in transport mode".into()))?;
 
         transport.rekey_outgoing();
@@ -347,16 +360,10 @@ mod tests {
         let client_keypair = KeyPair::generate();
 
         // Create sessions
-        let mut client = NoiseSession::new_initiator(
-            client_keypair,
-            server_keypair.public,
-            None,
-        ).unwrap();
+        let mut client =
+            NoiseSession::new_initiator(client_keypair, server_keypair.public, None).unwrap();
 
-        let mut server = NoiseSession::new_responder(
-            server_keypair,
-            None,
-        ).unwrap();
+        let mut server = NoiseSession::new_responder(server_keypair, None).unwrap();
 
         // Client -> Server (first message)
         let msg1 = client.write_handshake(b"hello from client").unwrap();
@@ -395,16 +402,11 @@ mod tests {
         let client_keypair = KeyPair::generate();
         let psk = PreSharedKey::from_passphrase("shared secret");
 
-        let mut client = NoiseSession::new_initiator(
-            client_keypair,
-            server_keypair.public,
-            Some(psk.clone()),
-        ).unwrap();
+        let mut client =
+            NoiseSession::new_initiator(client_keypair, server_keypair.public, Some(psk.clone()))
+                .unwrap();
 
-        let mut server = NoiseSession::new_responder(
-            server_keypair,
-            Some(psk),
-        ).unwrap();
+        let mut server = NoiseSession::new_responder(server_keypair, Some(psk)).unwrap();
 
         // Perform handshake
         let msg1 = client.write_handshake(&[]).unwrap();

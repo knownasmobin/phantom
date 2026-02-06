@@ -15,33 +15,34 @@
 //! - Video Parasite: Covert data in HLS/MPEG-TS packets (first implementation ever)
 //! - Proto Morph: Session-unique wire format, no fingerprint possible
 
-pub mod raw_socket;
-pub mod fake_tcp;
-pub mod protocol_115;
-pub mod icmp;
 pub mod dns_tunnel;
-pub mod quic_masq;
+pub mod fake_tcp;
 pub mod gre;
 pub mod http_smuggle;
-pub mod video_parasite;
-pub mod proto_morph;
+pub mod icmp;
 pub mod packet;
+pub mod proto_morph;
+pub mod protocol_115;
+pub mod quic_masq;
+pub mod raw_socket;
+pub mod video_parasite;
 
 use crate::config::TransportMode;
 use crate::error::Result;
 use async_trait::async_trait;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-pub use fake_tcp::FakeTcpTransport;
-pub use protocol_115::Protocol115Transport;
-pub use icmp::IcmpTransport;
 pub use dns_tunnel::DnsTunnelTransport;
-pub use quic_masq::QuicMasqTransport;
+pub use fake_tcp::FakeTcpTransport;
 pub use gre::GreTransport;
 pub use http_smuggle::HttpSmuggleTransport;
-pub use video_parasite::VideoParasiteTransport;
-pub use proto_morph::ProtoMorphTransport;
+pub use icmp::IcmpTransport;
 pub use packet::{Packet, PacketBuilder};
+pub use proto_morph::ProtoMorphTransport;
+pub use protocol_115::Protocol115Transport;
+pub use quic_masq::QuicMasqTransport;
+pub use video_parasite::VideoParasiteTransport;
 
 /// Trait for all transport implementations
 #[async_trait]
@@ -81,50 +82,50 @@ pub struct TransportStats {
 pub async fn create_transport(
     mode: TransportMode,
     bind_addr: SocketAddr,
-) -> Result<Box<dyn Transport>> {
+) -> Result<Arc<dyn Transport>> {
     match mode {
         TransportMode::FakeTcp => {
             let transport = FakeTcpTransport::new(bind_addr).await?;
-            Ok(Box::new(transport))
+            Ok(Arc::new(transport))
         }
         TransportMode::Protocol115 => {
             let transport = Protocol115Transport::new(bind_addr).await?;
-            Ok(Box::new(transport))
+            Ok(Arc::new(transport))
         }
         TransportMode::Icmp => {
             let transport = IcmpTransport::new(bind_addr).await?;
-            Ok(Box::new(transport))
+            Ok(Arc::new(transport))
         }
         TransportMode::Dns => {
             // DNS tunnel requires a tunnel domain - use default
             let transport = DnsTunnelTransport::new(bind_addr, "t.phantom.local".into()).await?;
-            Ok(Box::new(transport))
+            Ok(Arc::new(transport))
         }
         TransportMode::QuicMasq => {
             let transport = QuicMasqTransport::new(bind_addr).await?;
-            Ok(Box::new(transport))
+            Ok(Arc::new(transport))
         }
         TransportMode::Gre => {
             let transport = GreTransport::new(bind_addr).await?;
-            Ok(Box::new(transport))
+            Ok(Arc::new(transport))
         }
         TransportMode::HttpSmuggle => {
             let transport = HttpSmuggleTransport::new(bind_addr).await?;
-            Ok(Box::new(transport))
+            Ok(Arc::new(transport))
         }
         TransportMode::VideoParasite => {
             let transport = VideoParasiteTransport::new(bind_addr).await?;
-            Ok(Box::new(transport))
+            Ok(Arc::new(transport))
         }
         TransportMode::ProtoMorph => {
             // ProtoMorph requires a shared seed - use random for factory default
             let transport = ProtoMorphTransport::new_random(bind_addr).await?;
-            Ok(Box::new(transport))
+            Ok(Arc::new(transport))
         }
         TransportMode::Tcp => {
             // Standard TCP fallback - uses FakeTcp in passthrough mode
             let transport = FakeTcpTransport::new_passthrough(bind_addr).await?;
-            Ok(Box::new(transport))
+            Ok(Arc::new(transport))
         }
     }
 }
@@ -134,11 +135,11 @@ pub async fn create_dns_transport(
     bind_addr: SocketAddr,
     tunnel_domain: String,
     is_server: bool,
-) -> Result<Box<dyn Transport>> {
+) -> Result<Arc<dyn Transport>> {
     let transport = if is_server {
         DnsTunnelTransport::new_server(bind_addr, tunnel_domain).await?
     } else {
         DnsTunnelTransport::new(bind_addr, tunnel_domain).await?
     };
-    Ok(Box::new(transport))
+    Ok(Arc::new(transport))
 }

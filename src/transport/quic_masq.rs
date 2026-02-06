@@ -32,22 +32,22 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 
 /// QUIC version constants
-const QUIC_VERSION_1: u32 = 0x00000001;          // RFC 9000
-const QUIC_VERSION_2: u32 = 0x6b3343cf;          // RFC 9369
+const QUIC_VERSION_1: u32 = 0x00000001; // RFC 9000
+const QUIC_VERSION_2: u32 = 0x6b3343cf; // RFC 9369
 
 /// QUIC header form bit
-const QUIC_LONG_HEADER: u8 = 0x80;               // Long header form
-const QUIC_FIXED_BIT: u8 = 0x40;                 // Fixed bit (must be 1)
+const QUIC_LONG_HEADER: u8 = 0x80; // Long header form
+const QUIC_FIXED_BIT: u8 = 0x40; // Fixed bit (must be 1)
 
 /// QUIC long header packet types
-const QUIC_INITIAL: u8 = 0x00;                   // Initial packet type
+const QUIC_INITIAL: u8 = 0x00; // Initial packet type
 
 /// Minimum QUIC Initial packet size (RFC 9000 Section 14.1)
 const QUIC_INITIAL_MIN_SIZE: usize = 1200;
 
 /// Connection ID for our tunnel (mimics browser DCID length)
 const DCID_LENGTH: usize = 8;
-const SCID_LENGTH: usize = 0;                    // Browsers often omit SCID in Initial
+const SCID_LENGTH: usize = 0; // Browsers often omit SCID in Initial
 
 /// Magic bytes to identify our packets within the QUIC payload
 const PHANTOM_QUIC_MAGIC: [u8; 4] = [0x50, 0x48, 0x4E, 0x54]; // "PHNT"
@@ -79,7 +79,8 @@ struct TransportStatsInner {
 impl QuicMasqTransport {
     /// Create a new QUIC masquerade transport
     pub async fn new(bind_addr: SocketAddr) -> Result<Self> {
-        let socket = UdpSocket::bind(bind_addr).await
+        let socket = UdpSocket::bind(bind_addr)
+            .await
             .map_err(|e| PhantomError::Socket(format!("UDP bind failed: {}", e)))?;
 
         let mut connection_id = [0u8; DCID_LENGTH];
@@ -103,7 +104,10 @@ impl QuicMasqTransport {
     }
 
     /// Create with a specific connection ID
-    pub async fn with_connection_id(bind_addr: SocketAddr, connection_id: [u8; DCID_LENGTH]) -> Result<Self> {
+    pub async fn with_connection_id(
+        bind_addr: SocketAddr,
+        connection_id: [u8; DCID_LENGTH],
+    ) -> Result<Self> {
         let mut transport = Self::new(bind_addr).await?;
         transport.connection_id = connection_id;
         Ok(transport)
@@ -189,28 +193,36 @@ impl QuicMasqTransport {
 
         // DCID
         if offset >= packet.len() {
-            return Err(PhantomError::PacketParse("QUIC packet truncated at DCID len".into()));
+            return Err(PhantomError::PacketParse(
+                "QUIC packet truncated at DCID len".into(),
+            ));
         }
         let dcid_len = packet[offset] as usize;
         offset += 1 + dcid_len;
 
         // SCID
         if offset >= packet.len() {
-            return Err(PhantomError::PacketParse("QUIC packet truncated at SCID len".into()));
+            return Err(PhantomError::PacketParse(
+                "QUIC packet truncated at SCID len".into(),
+            ));
         }
         let scid_len = packet[offset] as usize;
         offset += 1 + scid_len;
 
         // Token length (variable-length integer)
         if offset >= packet.len() {
-            return Err(PhantomError::PacketParse("QUIC packet truncated at token".into()));
+            return Err(PhantomError::PacketParse(
+                "QUIC packet truncated at token".into(),
+            ));
         }
         let (token_len, token_len_size) = decode_varint(&packet[offset..])?;
         offset += token_len_size + token_len as usize;
 
         // Length (variable-length integer)
         if offset >= packet.len() {
-            return Err(PhantomError::PacketParse("QUIC packet truncated at length".into()));
+            return Err(PhantomError::PacketParse(
+                "QUIC packet truncated at length".into(),
+            ));
         }
         let (_payload_len, len_size) = decode_varint(&packet[offset..])?;
         offset += len_size;
@@ -220,7 +232,9 @@ impl QuicMasqTransport {
 
         // Check for our magic bytes
         if offset + PHANTOM_QUIC_MAGIC.len() + 2 > packet.len() {
-            return Err(PhantomError::InvalidPacket("Payload too short for magic".into()));
+            return Err(PhantomError::InvalidPacket(
+                "Payload too short for magic".into(),
+            ));
         }
 
         if packet[offset..offset + PHANTOM_QUIC_MAGIC.len()] != PHANTOM_QUIC_MAGIC {
@@ -233,7 +247,9 @@ impl QuicMasqTransport {
         offset += 2;
 
         if offset + data_len > packet.len() {
-            return Err(PhantomError::PacketParse("Data length exceeds packet".into()));
+            return Err(PhantomError::PacketParse(
+                "Data length exceeds packet".into(),
+            ));
         }
 
         Ok(packet[offset..offset + data_len].to_vec())
@@ -253,7 +269,9 @@ impl QuicMasqTransport {
 
         // Check magic
         if packet[offset..offset + PHANTOM_QUIC_MAGIC.len()] != PHANTOM_QUIC_MAGIC {
-            return Err(PhantomError::InvalidPacket("Short header magic mismatch".into()));
+            return Err(PhantomError::InvalidPacket(
+                "Short header magic mismatch".into(),
+            ));
         }
         offset += PHANTOM_QUIC_MAGIC.len();
 
@@ -261,7 +279,9 @@ impl QuicMasqTransport {
         offset += 2;
 
         if offset + data_len > packet.len() {
-            return Err(PhantomError::PacketParse("Short header data exceeds packet".into()));
+            return Err(PhantomError::PacketParse(
+                "Short header data exceeds packet".into(),
+            ));
         }
 
         Ok(packet[offset..offset + data_len].to_vec())
@@ -271,7 +291,8 @@ impl QuicMasqTransport {
     pub fn build_short_packet(&self, data: &[u8]) -> Vec<u8> {
         let header_byte = QUIC_FIXED_BIT | 0x20; // Short header + key phase
 
-        let mut packet = Vec::with_capacity(1 + DCID_LENGTH + 1 + PHANTOM_QUIC_MAGIC.len() + 2 + data.len());
+        let mut packet =
+            Vec::with_capacity(1 + DCID_LENGTH + 1 + PHANTOM_QUIC_MAGIC.len() + 2 + data.len());
 
         packet.push(header_byte);
         packet.extend_from_slice(&self.connection_id);
@@ -294,11 +315,15 @@ impl Transport for QuicMasqTransport {
     async fn send(&self, data: &[u8], dst: SocketAddr) -> Result<usize> {
         let packet = self.build_packet(data);
 
-        self.socket.send_to(&packet, dst).await
-            .map_err(|e| PhantomError::Io(e))?;
+        self.socket
+            .send_to(&packet, dst)
+            .await
+            .map_err(PhantomError::Io)?;
 
         self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
-        self.stats.bytes_sent.fetch_add(packet.len() as u64, Ordering::Relaxed);
+        self.stats
+            .bytes_sent
+            .fetch_add(packet.len() as u64, Ordering::Relaxed);
 
         Ok(data.len())
     }
@@ -307,8 +332,11 @@ impl Transport for QuicMasqTransport {
         let mut raw_buf = [0u8; 65535];
 
         loop {
-            let (n, src) = self.socket.recv_from(&mut raw_buf).await
-                .map_err(|e| PhantomError::Io(e))?;
+            let (n, src) = self
+                .socket
+                .recv_from(&mut raw_buf)
+                .await
+                .map_err(PhantomError::Io)?;
 
             if n < 7 {
                 self.stats.packets_dropped.fetch_add(1, Ordering::Relaxed);
@@ -321,7 +349,9 @@ impl Transport for QuicMasqTransport {
                     buf[..len].copy_from_slice(&data[..len]);
 
                     self.stats.packets_recv.fetch_add(1, Ordering::Relaxed);
-                    self.stats.bytes_recv.fetch_add(len as u64, Ordering::Relaxed);
+                    self.stats
+                        .bytes_recv
+                        .fetch_add(len as u64, Ordering::Relaxed);
 
                     return Ok((len, src));
                 }
@@ -395,8 +425,14 @@ fn decode_varint(data: &[u8]) -> Result<(u64, usize)> {
                 return Err(PhantomError::PacketParse("Varint too short".into()));
             }
             let val = u64::from_be_bytes([
-                data[0] & 0x3F, data[1], data[2], data[3],
-                data[4], data[5], data[6], data[7],
+                data[0] & 0x3F,
+                data[1],
+                data[2],
+                data[3],
+                data[4],
+                data[5],
+                data[6],
+                data[7],
             ]);
             Ok((val, 8))
         }
@@ -447,7 +483,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_packet_roundtrip() {
-        let transport = QuicMasqTransport::new("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let transport = QuicMasqTransport::new("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
 
         let data = b"Hello, tunnel!";
         let packet = transport.build_packet(data);
@@ -462,7 +500,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_short_header_roundtrip() {
-        let transport = QuicMasqTransport::new("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let transport = QuicMasqTransport::new("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
 
         let data = b"Short header data";
         let packet = transport.build_short_packet(data);

@@ -3,10 +3,9 @@
 //! Generates and validates JA3/JA4 fingerprints to ensure our
 //! ClientHello matches the expected fingerprint of the mimicked app.
 
-use crate::config::MimicTarget;
-use crate::error::Result;
 use super::tls::TlsClientHello;
-use blake2::{Blake2b512, Digest};
+use crate::config::MimicTarget;
+use blake2::Digest;
 
 /// A TLS fingerprint (JA3-style)
 #[derive(Debug, Clone)]
@@ -26,24 +25,27 @@ pub struct Fingerprint {
 impl Fingerprint {
     /// Extract fingerprint from a ClientHello
     pub fn from_client_hello(ch: &TlsClientHello) -> Self {
-        let mut extensions: Vec<u16> = ch.extensions.iter().map(|e| e.ext_type).collect();
+        let extensions: Vec<u16> = ch.extensions.iter().map(|e| e.ext_type).collect();
 
         let mut elliptic_curves = Vec::new();
         let mut ec_point_formats = Vec::new();
 
         for ext in &ch.extensions {
             match ext.ext_type {
-                10 => { // Supported Groups
+                10 => {
+                    // Supported Groups
                     if ext.data.len() >= 2 {
                         let len = u16::from_be_bytes([ext.data[0], ext.data[1]]) as usize;
                         let mut i = 2;
                         while i + 1 < ext.data.len() && i < 2 + len {
-                            elliptic_curves.push(u16::from_be_bytes([ext.data[i], ext.data[i + 1]]));
+                            elliptic_curves
+                                .push(u16::from_be_bytes([ext.data[i], ext.data[i + 1]]));
                             i += 2;
                         }
                     }
                 }
-                11 => { // EC Point Formats
+                11 => {
+                    // EC Point Formats
                     if !ext.data.is_empty() {
                         let len = ext.data[0] as usize;
                         ec_point_formats = ext.data[1..1 + len.min(ext.data.len() - 1)].to_vec();
@@ -72,22 +74,30 @@ impl Fingerprint {
 
     /// Generate JA3 string (without hashing)
     pub fn ja3_string(&self) -> String {
-        let ciphers: Vec<String> = self.cipher_suites.iter()
+        let ciphers: Vec<String> = self
+            .cipher_suites
+            .iter()
             .filter(|&&c| !is_grease(c))
             .map(|c| c.to_string())
             .collect();
 
-        let extensions: Vec<String> = self.extensions.iter()
+        let extensions: Vec<String> = self
+            .extensions
+            .iter()
             .filter(|&&e| !is_grease(e))
             .map(|e| e.to_string())
             .collect();
 
-        let curves: Vec<String> = self.elliptic_curves.iter()
+        let curves: Vec<String> = self
+            .elliptic_curves
+            .iter()
             .filter(|&&c| !is_grease(c))
             .map(|c| c.to_string())
             .collect();
 
-        let formats: Vec<String> = self.ec_point_formats.iter()
+        let formats: Vec<String> = self
+            .ec_point_formats
+            .iter()
             .map(|f| f.to_string())
             .collect();
 
@@ -140,8 +150,8 @@ impl FingerprintGenerator {
         Fingerprint {
             version: 0x0303,
             cipher_suites: vec![
-                0x1301, 0x1302, 0x1303, 0xc02c, 0xc02b, 0xc030, 0xc02f,
-                0xcca9, 0xcca8, 0xc024, 0xc023, 0xc028, 0xc027,
+                0x1301, 0x1302, 0x1303, 0xc02c, 0xc02b, 0xc030, 0xc02f, 0xcca9, 0xcca8, 0xc024,
+                0xc023, 0xc028, 0xc027,
             ],
             extensions: vec![0, 23, 65281, 10, 11, 35, 16, 13, 43, 45, 51],
             elliptic_curves: vec![0x001d, 0x0017, 0x0018, 0x0019],
@@ -158,8 +168,7 @@ impl FingerprintGenerator {
         Fingerprint {
             version: 0x0303,
             cipher_suites: vec![
-                0x1301, 0x1303, 0x1302, 0xc02b, 0xc02f, 0xc02c, 0xc030,
-                0xcca9, 0xcca8,
+                0x1301, 0x1303, 0x1302, 0xc02b, 0xc02f, 0xc02c, 0xc030, 0xcca9, 0xcca8,
             ],
             extensions: vec![0, 23, 65281, 10, 11, 35, 16, 13, 43, 45, 51],
             elliptic_curves: vec![0x001d, 0x0017, 0x0018],
