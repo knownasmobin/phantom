@@ -37,7 +37,7 @@ struct Args {
     #[arg(short, long, default_value = "1080")]
     listen: u16,
 
-    /// Transport mode (faketcp, protocol115, icmp)
+    /// Transport mode (faketcp, protocol115, icmp, dns, quicmasq, gre, httpsmuggle, videoparasite, protomorph)
     #[arg(short, long, default_value = "faketcp")]
     transport: String,
 
@@ -92,6 +92,12 @@ async fn main() -> Result<()> {
         "faketcp" | "fake-tcp" | "tcp" => TransportMode::FakeTcp,
         "protocol115" | "115" | "l2tp" => TransportMode::Protocol115,
         "icmp" => TransportMode::Icmp,
+        "dns" => TransportMode::Dns,
+        "quicmasq" | "quic" => TransportMode::QuicMasq,
+        "gre" => TransportMode::Gre,
+        "httpsmuggle" | "smuggle" | "http" => TransportMode::HttpSmuggle,
+        "videoparasite" | "video" | "hls" => TransportMode::VideoParasite,
+        "protomorph" | "morph" => TransportMode::ProtoMorph,
         _ => {
             error!("Unknown transport mode: {}", args.transport);
             return Err(PhantomError::Config(format!(
