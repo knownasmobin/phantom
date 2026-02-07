@@ -141,24 +141,29 @@ impl PhantomTunnel {
         // Send handshake message (embedded in fake TLS ClientHello structure)
         let handshake_msg = noise.write_handshake(&client_hello)?;
 
-        // Apply Geneva strategies to the handshake
-        let packets = self.geneva.process_outbound(
-            &handshake_msg,
-            match self.config.network.bind_addr {
-                SocketAddr::V4(v4) => *v4.ip(),
-                _ => return Err(PhantomError::Config("IPv6 not supported".into())),
-            },
-            match remote_addr {
-                SocketAddr::V4(v4) => *v4.ip(),
-                _ => return Err(PhantomError::Config("IPv6 not supported".into())),
-            },
-            self.config.network.bind_addr.port(),
-            remote_addr.port(),
-        )?;
+        // Apply Geneva strategies only for raw-packet transports;
+        // app-layer transports (VideoParasite, HttpSmuggle, etc.) send application
+        // bytes, not raw IP packets, so Geneva would fail to parse them.
+        if self.config.transport.primary.requires_raw_socket() {
+            let packets = self.geneva.process_outbound(
+                &handshake_msg,
+                match self.config.network.bind_addr {
+                    SocketAddr::V4(v4) => *v4.ip(),
+                    _ => return Err(PhantomError::Config("IPv6 not supported".into())),
+                },
+                match remote_addr {
+                    SocketAddr::V4(v4) => *v4.ip(),
+                    _ => return Err(PhantomError::Config("IPv6 not supported".into())),
+                },
+                self.config.network.bind_addr.port(),
+                remote_addr.port(),
+            )?;
 
-        // Send all Geneva-processed packets
-        for packet in packets {
-            transport.send(&packet, remote_addr).await?;
+            for packet in packets {
+                transport.send(&packet, remote_addr).await?;
+            }
+        } else {
+            transport.send(&handshake_msg, remote_addr).await?;
         }
 
         // Wait for response
@@ -276,23 +281,28 @@ impl PhantomTunnel {
         // Apply Geneva and send
         let mut total_sent = 0;
         for packet in packets_to_send {
-            let processed = self.geneva.process_outbound(
-                &packet,
-                match self.config.network.bind_addr {
-                    SocketAddr::V4(v4) => *v4.ip(),
-                    _ => return Err(PhantomError::Config("IPv6 not supported".into())),
-                },
-                match remote_addr {
-                    SocketAddr::V4(v4) => *v4.ip(),
-                    _ => return Err(PhantomError::Config("IPv6 not supported".into())),
-                },
-                self.config.network.bind_addr.port(),
-                remote_addr.port(),
-            )?;
+            if self.config.transport.primary.requires_raw_socket() {
+                let processed = self.geneva.process_outbound(
+                    &packet,
+                    match self.config.network.bind_addr {
+                        SocketAddr::V4(v4) => *v4.ip(),
+                        _ => return Err(PhantomError::Config("IPv6 not supported".into())),
+                    },
+                    match remote_addr {
+                        SocketAddr::V4(v4) => *v4.ip(),
+                        _ => return Err(PhantomError::Config("IPv6 not supported".into())),
+                    },
+                    self.config.network.bind_addr.port(),
+                    remote_addr.port(),
+                )?;
 
-            for p in processed {
-                transport.send(&p, remote_addr).await?;
-                total_sent += p.len();
+                for p in processed {
+                    transport.send(&p, remote_addr).await?;
+                    total_sent += p.len();
+                }
+            } else {
+                transport.send(&packet, remote_addr).await?;
+                total_sent += packet.len();
             }
         }
 

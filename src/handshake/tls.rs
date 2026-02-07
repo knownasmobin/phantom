@@ -155,25 +155,52 @@ impl TlsClientHello {
         let session_id_len = client_hello[34] as usize;
         let mut offset = 35;
 
+        if offset + session_id_len > client_hello.len() {
+            return Err(PhantomError::PacketParse(
+                "Session ID exceeds packet".into(),
+            ));
+        }
         let session_id = client_hello[offset..offset + session_id_len].to_vec();
         offset += session_id_len;
 
         // Parse cipher suites
+        if offset + 2 > client_hello.len() {
+            return Err(PhantomError::PacketParse(
+                "Cipher suites length missing".into(),
+            ));
+        }
         let cipher_len =
             u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]) as usize;
         offset += 2;
 
+        if offset + cipher_len > client_hello.len() {
+            return Err(PhantomError::PacketParse(
+                "Cipher suites exceed packet".into(),
+            ));
+        }
         let mut cipher_suites = Vec::new();
         let cipher_end = offset + cipher_len;
-        while offset < cipher_end {
+        while offset + 1 < cipher_end {
             let suite = u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]);
             cipher_suites.push(suite);
             offset += 2;
         }
+        offset = cipher_end;
 
         // Parse compression methods
+        if offset >= client_hello.len() {
+            return Err(PhantomError::PacketParse(
+                "Compression methods missing".into(),
+            ));
+        }
         let comp_len = client_hello[offset] as usize;
         offset += 1;
+
+        if offset + comp_len > client_hello.len() {
+            return Err(PhantomError::PacketParse(
+                "Compression methods exceed packet".into(),
+            ));
+        }
         let compression_methods = client_hello[offset..offset + comp_len].to_vec();
         offset += comp_len;
 
@@ -186,6 +213,9 @@ impl TlsClientHello {
 
             let ext_end = offset + ext_len;
             while offset + 4 <= ext_end && offset + 4 <= client_hello.len() {
+                if extensions.len() >= 64 {
+                    break;
+                }
                 let ext_type = u16::from_be_bytes([client_hello[offset], client_hello[offset + 1]]);
                 let data_len =
                     u16::from_be_bytes([client_hello[offset + 2], client_hello[offset + 3]])
@@ -271,7 +301,9 @@ impl TlsClientHelloBuilder {
             .clone()
             .unwrap_or_else(|| self.mimic_target.default_sni().to_string());
 
-        let random: [u8; 32] = random_bytes(32).try_into().unwrap();
+        let random: [u8; 32] = random_bytes(32)
+            .try_into()
+            .expect("random_bytes(32) always returns 32 bytes");
 
         let session_id = self.session_id.clone().unwrap_or_else(|| random_bytes(32));
 

@@ -436,7 +436,7 @@ fn decode_varint(data: &[u8]) -> Result<(u64, usize)> {
             ]);
             Ok((val, 8))
         }
-        _ => unreachable!(),
+        _ => Err(PhantomError::PacketParse("Invalid varint prefix".into())),
     }
 }
 

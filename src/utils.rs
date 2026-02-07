@@ -74,7 +74,7 @@ pub fn timestamp_ms() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .expect("system clock before UNIX epoch")
         .as_millis() as u64
 }
 
@@ -83,7 +83,7 @@ pub fn timestamp_us() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .unwrap()
+        .expect("system clock before UNIX epoch")
         .as_micros() as u64
 }
 
@@ -117,7 +117,7 @@ impl Default for MonotonicCounter {
 
 /// Sliding window for replay protection
 pub struct ReplayWindow {
-    window: Vec<u64>,
+    window: std::collections::HashSet<u64>,
     window_size: usize,
     last_seq: u64,
 }
@@ -125,7 +125,7 @@ pub struct ReplayWindow {
 impl ReplayWindow {
     pub fn new(size: usize) -> Self {
         Self {
-            window: Vec::with_capacity(size),
+            window: std::collections::HashSet::with_capacity(size),
             window_size: size,
             last_seq: 0,
         }
@@ -139,13 +139,13 @@ impl ReplayWindow {
             return false;
         }
 
-        // If sequence is in window, check if seen
+        // If sequence is in window, check if seen (O(1) with HashSet)
         if self.window.contains(&seq) {
             return false;
         }
 
         // Valid - update window
-        self.window.push(seq);
+        self.window.insert(seq);
         if seq > self.last_seq {
             self.last_seq = seq;
         }

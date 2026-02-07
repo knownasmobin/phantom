@@ -384,7 +384,8 @@ impl Packet {
             TransportHeader::Icmp(_) => IcmpHeader::SIZE,
             TransportHeader::Raw => 0,
         };
-        self.ip.total_length = (IpHeader::MIN_SIZE + transport_len + self.payload.len()) as u16;
+        let total = IpHeader::MIN_SIZE + transport_len + self.payload.len();
+        self.ip.total_length = total.min(u16::MAX as usize) as u16;
 
         // Calculate checksums
         self.ip.calculate_checksum();

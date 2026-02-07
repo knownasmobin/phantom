@@ -66,9 +66,13 @@ impl NoiseSession {
         psk: Option<PreSharedKey>,
     ) -> Result<Self> {
         let private_key_bytes = local_keypair.private.as_bytes();
-        let mut builder = Builder::new(NOISE_PATTERN.parse().unwrap())
-            .local_private_key(&private_key_bytes)
-            .remote_public_key(remote_public.as_bytes());
+        let mut builder = Builder::new(
+            NOISE_PATTERN
+                .parse()
+                .expect("hard-coded Noise pattern must be valid"),
+        )
+        .local_private_key(&private_key_bytes)
+        .remote_public_key(remote_public.as_bytes());
 
         if let Some(ref psk) = psk {
             builder = builder.psk(0, psk.as_bytes());
@@ -92,8 +96,12 @@ impl NoiseSession {
     /// Create a new session as responder (server)
     pub fn new_responder(local_keypair: KeyPair, psk: Option<PreSharedKey>) -> Result<Self> {
         let private_key_bytes = local_keypair.private.as_bytes();
-        let mut builder =
-            Builder::new(NOISE_PATTERN.parse().unwrap()).local_private_key(&private_key_bytes);
+        let mut builder = Builder::new(
+            NOISE_PATTERN
+                .parse()
+                .expect("hard-coded Noise pattern must be valid"),
+        )
+        .local_private_key(&private_key_bytes);
 
         if let Some(ref psk) = psk {
             builder = builder.psk(0, psk.as_bytes());

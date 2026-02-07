@@ -252,6 +252,7 @@ pub struct FecBlockAssembler {
     original_len: usize,
     shards: Vec<Option<Vec<u8>>>,
     received_count: usize,
+    created_at: std::time::Instant,
 }
 
 impl FecBlockAssembler {
@@ -268,6 +269,7 @@ impl FecBlockAssembler {
             original_len,
             shards: vec![None; total_shards],
             received_count: 0,
+            created_at: std::time::Instant::now(),
         }
     }
 
@@ -389,9 +391,13 @@ impl FecReceiver {
             let data = assembler.decode(&self.codec)?;
             self.blocks.remove(&block_id);
 
-            // Cleanup old blocks
+            // Expire blocks older than 30 seconds
+            let now = std::time::Instant::now();
+            self.blocks
+                .retain(|_, a| now.duration_since(a.created_at).as_secs() < 30);
+
+            // Also enforce max_blocks limit
             if self.blocks.len() > self.max_blocks {
-                // Remove oldest block
                 if let Some(&oldest) = self.blocks.keys().min() {
                     self.blocks.remove(&oldest);
                 }
