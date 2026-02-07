@@ -162,13 +162,20 @@ async fn main() -> Result<()> {
         }
     });
 
+    // TCP-based transports use a single stream per connection, so the server
+    // must handle one client at a time (accept loop and data loop share the stream).
+    // Connectionless transports (raw sockets, UDP) can handle clients concurrently.
+    let is_stream_transport = matches!(
+        transport_mode,
+        TransportMode::HttpSmuggle | TransportMode::VideoParasite | TransportMode::ProtoMorph
+    );
+
     // Accept connections
     loop {
         match tunnel.accept().await {
             Ok((client_addr, session)) => {
                 info!("New client connected: {}", client_addr);
 
-                let tunnel = tunnel.clone();
                 let sessions = sessions.clone();
 
                 // Store session
@@ -181,13 +188,23 @@ async fn main() -> Result<()> {
                     },
                 );
 
-                // Handle client
-                tokio::spawn(async move {
-                    if let Err(e) = handle_client(tunnel, session, client_addr).await {
+                if is_stream_transport {
+                    // Stream transports: handle inline (one client at a time)
+                    if let Err(e) = handle_client(tunnel.clone(), session, client_addr).await {
                         warn!("Client {} error: {}", client_addr, e);
                     }
-                    info!("Client {} disconnected", client_addr);
-                });
+                    info!("Client {} disconnected, ready for next connection", client_addr);
+                    sessions.write().await.remove(&client_addr);
+                } else {
+                    // Connectionless transports: handle concurrently
+                    let tunnel = tunnel.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = handle_client(tunnel, session, client_addr).await {
+                            warn!("Client {} error: {}", client_addr, e);
+                        }
+                        info!("Client {} disconnected", client_addr);
+                    });
+                }
             }
             Err(e) => {
                 error!("Accept error: {}", e);

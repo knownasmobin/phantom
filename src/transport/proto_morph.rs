@@ -36,7 +36,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 // ============================================================
@@ -203,7 +203,7 @@ impl WireFormat {
         };
 
         // Sequence number: 50% chance
-        let has_sequence = rng.next_u32().is_multiple_of(2);
+        let has_sequence = rng.next_u32() % 2 == 0;
         let sequence_offset = if has_sequence {
             length_field_offset
                 + match length_encoding {
@@ -541,8 +541,12 @@ impl WireFormat {
 pub struct ProtoMorphTransport {
     /// TCP stream
     stream: Arc<Mutex<Option<TcpStream>>>,
-    /// Remote address
+    /// TCP listener for server mode
+    listener: Arc<Mutex<Option<TcpListener>>>,
+    /// Remote/bind address
     remote_addr: SocketAddr,
+    /// Peer address (updated on accept)
+    peer_addr: Arc<Mutex<SocketAddr>>,
     /// Session-unique wire format
     wire_format: WireFormat,
     /// Sequence counter
@@ -570,7 +574,9 @@ impl ProtoMorphTransport {
 
         Ok(Self {
             stream: Arc::new(Mutex::new(None)),
+            listener: Arc::new(Mutex::new(None)),
             remote_addr,
+            peer_addr: Arc::new(Mutex::new(remote_addr)),
             wire_format,
             sequence: AtomicU64::new(0),
             stats: Arc::new(TransportStatsInner {
@@ -592,22 +598,79 @@ impl ProtoMorphTransport {
         Self::new(remote_addr, seed).await
     }
 
+    /// Create a new server-mode transport that binds and accepts connections
+    pub async fn new_server(bind_addr: SocketAddr, seed: [u8; 32]) -> Result<Self> {
+        let wire_format = WireFormat::from_seed(&seed);
+        let listener = TcpListener::bind(bind_addr)
+            .await
+            .map_err(|e| PhantomError::Socket(format!("Morph bind failed: {}", e)))?;
+
+        Ok(Self {
+            stream: Arc::new(Mutex::new(None)),
+            listener: Arc::new(Mutex::new(Some(listener))),
+            remote_addr: bind_addr,
+            peer_addr: Arc::new(Mutex::new(bind_addr)),
+            wire_format,
+            sequence: AtomicU64::new(0),
+            stats: Arc::new(TransportStatsInner {
+                packets_sent: AtomicU64::new(0),
+                packets_recv: AtomicU64::new(0),
+                bytes_sent: AtomicU64::new(0),
+                bytes_recv: AtomicU64::new(0),
+                packets_dropped: AtomicU64::new(0),
+            }),
+            running: Arc::new(AtomicBool::new(true)),
+        })
+    }
+
+    /// Create a server-mode transport with a random seed
+    pub async fn new_random_server(bind_addr: SocketAddr) -> Result<Self> {
+        let seed_bytes = crate::utils::random_bytes(32);
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&seed_bytes);
+        Self::new_server(bind_addr, seed).await
+    }
+
     /// Get the wire format (for inspection/debugging)
     pub fn wire_format(&self) -> &WireFormat {
         &self.wire_format
     }
 
-    /// Ensure connection
-    async fn ensure_connected(&self) -> Result<()> {
-        let needs_connect = self.stream.lock().await.is_none();
+    /// Ensure a TCP connection is established.
+    /// In server mode (listener exists): accepts an incoming connection.
+    /// In client mode: connects to connect_addr.
+    async fn ensure_connected(&self, connect_addr: SocketAddr) -> Result<()> {
+        if self.stream.lock().await.is_some() {
+            return Ok(());
+        }
 
-        if needs_connect {
-            let stream = TcpStream::connect(self.remote_addr)
+        // Acquire listener lock to serialize accept/connect attempts
+        let listener_guard = self.listener.lock().await;
+
+        // Double-check after acquiring lock (another task may have connected)
+        if self.stream.lock().await.is_some() {
+            return Ok(());
+        }
+
+        let (stream, peer) = if let Some(ref listener) = *listener_guard {
+            // Server mode: accept incoming connection
+            let (stream, peer) = listener
+                .accept()
+                .await
+                .map_err(|e| PhantomError::Socket(format!("Morph accept failed: {}", e)))?;
+            (stream, peer)
+        } else {
+            // Client mode: connect to remote
+            drop(listener_guard);
+            let stream = TcpStream::connect(connect_addr)
                 .await
                 .map_err(|e| PhantomError::Socket(format!("Morph connect failed: {}", e)))?;
-            stream.set_nodelay(true).ok();
-            *self.stream.lock().await = Some(stream);
-        }
+            (stream, connect_addr)
+        };
+
+        stream.set_nodelay(true).ok();
+        *self.peer_addr.lock().await = peer;
+        *self.stream.lock().await = Some(stream);
         Ok(())
     }
 
@@ -623,7 +686,7 @@ impl Transport for ProtoMorphTransport {
     }
 
     async fn send(&self, data: &[u8], dst: SocketAddr) -> Result<usize> {
-        self.ensure_connected().await?;
+        self.ensure_connected(dst).await?;
 
         let seq = self.next_sequence();
         let packet = self.wire_format.encode(data, seq);
@@ -633,11 +696,14 @@ impl Transport for ProtoMorphTransport {
             // Send length prefix (4 bytes) + packet
             // This framing is also morphed by the XOR mask
             let frame_len = (packet.len() as u32).to_be_bytes();
-            stream
-                .write_all(&frame_len)
-                .await
-                .map_err(PhantomError::Io)?;
-            stream.write_all(&packet).await.map_err(PhantomError::Io)?;
+            if let Err(e) = stream.write_all(&frame_len).await {
+                *guard = None;
+                return Err(PhantomError::Io(e));
+            }
+            if let Err(e) = stream.write_all(&packet).await {
+                *guard = None;
+                return Err(PhantomError::Io(e));
+            }
 
             self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
             self.stats
@@ -651,16 +717,16 @@ impl Transport for ProtoMorphTransport {
     }
 
     async fn recv(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
-        self.ensure_connected().await?;
+        self.ensure_connected(self.remote_addr).await?;
 
         let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
             // Read frame length
             let mut len_buf = [0u8; 4];
-            stream
-                .read_exact(&mut len_buf)
-                .await
-                .map_err(PhantomError::Io)?;
+            if let Err(e) = stream.read_exact(&mut len_buf).await {
+                *guard = None; // Clear broken stream so next call re-accepts/reconnects
+                return Err(PhantomError::Io(e));
+            }
 
             let frame_len = u32::from_be_bytes(len_buf) as usize;
             if frame_len > 65535 {
@@ -669,10 +735,10 @@ impl Transport for ProtoMorphTransport {
 
             // Read the morphed packet
             let mut packet = vec![0u8; frame_len];
-            stream
-                .read_exact(&mut packet)
-                .await
-                .map_err(PhantomError::Io)?;
+            if let Err(e) = stream.read_exact(&mut packet).await {
+                *guard = None;
+                return Err(PhantomError::Io(e));
+            }
 
             // Decode
             let (data, _seq) = self.wire_format.decode(&packet)?;
@@ -685,7 +751,8 @@ impl Transport for ProtoMorphTransport {
                 .bytes_recv
                 .fetch_add((4 + frame_len) as u64, Ordering::Relaxed);
 
-            Ok((len, self.remote_addr))
+            let peer = *self.peer_addr.lock().await;
+            Ok((len, peer))
         } else {
             Err(PhantomError::Socket("Not connected".into()))
         }

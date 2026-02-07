@@ -34,7 +34,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 // ============================================================
@@ -331,7 +331,7 @@ impl TsSegment {
 
     /// Parse TS packets from raw bytes
     pub fn from_bytes(data: &[u8]) -> Result<Self> {
-        if !data.len().is_multiple_of(TS_PACKET_SIZE) {
+        if data.len() % TS_PACKET_SIZE != 0 {
             return Err(PhantomError::PacketParse(format!(
                 "TS data length {} not multiple of {}",
                 data.len(),
@@ -391,8 +391,12 @@ pub fn generate_playlist(segment_count: u32, segment_duration: f64, base_url: &s
 pub struct VideoParasiteTransport {
     /// TCP stream to the tunnel server
     stream: Arc<Mutex<Option<TcpStream>>>,
-    /// Remote server address
+    /// TCP listener for server mode
+    listener: Arc<Mutex<Option<TcpListener>>>,
+    /// Remote/bind address
     remote_addr: SocketAddr,
+    /// Peer address (updated on accept)
+    peer_addr: Arc<Mutex<SocketAddr>>,
     /// Video PID for cover traffic
     video_pid: u16,
     /// Segment counter
@@ -412,11 +416,13 @@ struct TransportStatsInner {
 }
 
 impl VideoParasiteTransport {
-    /// Create a new video parasite transport
+    /// Create a new video parasite transport (client mode)
     pub async fn new(remote_addr: SocketAddr) -> Result<Self> {
         Ok(Self {
             stream: Arc::new(Mutex::new(None)),
+            listener: Arc::new(Mutex::new(None)),
             remote_addr,
+            peer_addr: Arc::new(Mutex::new(remote_addr)),
             video_pid: TS_COVERT_PID,
             segment_counter: AtomicU64::new(0),
             stats: Arc::new(TransportStatsInner {
@@ -430,17 +436,62 @@ impl VideoParasiteTransport {
         })
     }
 
-    /// Ensure connection to the tunnel server
-    async fn ensure_connected(&self) -> Result<()> {
-        let needs_connect = self.stream.lock().await.is_none();
+    /// Create a new server-mode transport that binds and accepts connections
+    pub async fn new_server(bind_addr: SocketAddr) -> Result<Self> {
+        let listener = TcpListener::bind(bind_addr)
+            .await
+            .map_err(|e| PhantomError::Socket(format!("Video bind failed: {}", e)))?;
 
-        if needs_connect {
-            let stream = TcpStream::connect(self.remote_addr)
+        Ok(Self {
+            stream: Arc::new(Mutex::new(None)),
+            listener: Arc::new(Mutex::new(Some(listener))),
+            remote_addr: bind_addr,
+            peer_addr: Arc::new(Mutex::new(bind_addr)),
+            video_pid: TS_COVERT_PID,
+            segment_counter: AtomicU64::new(0),
+            stats: Arc::new(TransportStatsInner {
+                packets_sent: AtomicU64::new(0),
+                packets_recv: AtomicU64::new(0),
+                bytes_sent: AtomicU64::new(0),
+                bytes_recv: AtomicU64::new(0),
+                packets_dropped: AtomicU64::new(0),
+            }),
+            running: Arc::new(AtomicBool::new(true)),
+        })
+    }
+
+    /// Ensure a TCP connection is established.
+    /// In server mode (listener exists): accepts an incoming connection.
+    /// In client mode: connects to connect_addr.
+    async fn ensure_connected(&self, connect_addr: SocketAddr) -> Result<()> {
+        if self.stream.lock().await.is_some() {
+            return Ok(());
+        }
+
+        let listener_guard = self.listener.lock().await;
+
+        // Double-check after acquiring lock
+        if self.stream.lock().await.is_some() {
+            return Ok(());
+        }
+
+        let (stream, peer) = if let Some(ref listener) = *listener_guard {
+            let (stream, peer) = listener
+                .accept()
+                .await
+                .map_err(|e| PhantomError::Socket(format!("Video accept failed: {}", e)))?;
+            (stream, peer)
+        } else {
+            drop(listener_guard);
+            let stream = TcpStream::connect(connect_addr)
                 .await
                 .map_err(|e| PhantomError::Socket(format!("Video connect failed: {}", e)))?;
-            stream.set_nodelay(true).ok();
-            *self.stream.lock().await = Some(stream);
-        }
+            (stream, connect_addr)
+        };
+
+        stream.set_nodelay(true).ok();
+        *self.peer_addr.lock().await = peer;
+        *self.stream.lock().await = Some(stream);
         Ok(())
     }
 
@@ -519,13 +570,16 @@ impl Transport for VideoParasiteTransport {
     }
 
     async fn send(&self, data: &[u8], dst: SocketAddr) -> Result<usize> {
-        self.ensure_connected().await?;
+        self.ensure_connected(dst).await?;
 
         let request = self.build_segment_request(data);
 
         let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
-            stream.write_all(&request).await.map_err(PhantomError::Io)?;
+            if let Err(e) = stream.write_all(&request).await {
+                *guard = None;
+                return Err(PhantomError::Io(e));
+            }
 
             self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
             self.stats
@@ -539,13 +593,19 @@ impl Transport for VideoParasiteTransport {
     }
 
     async fn recv(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
-        self.ensure_connected().await?;
+        self.ensure_connected(self.remote_addr).await?;
 
         let mut raw_buf = [0u8; 131072]; // 128KB buffer for video segments
 
         let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
-            let n = stream.read(&mut raw_buf).await.map_err(PhantomError::Io)?;
+            let n = match stream.read(&mut raw_buf).await {
+                Ok(n) => n,
+                Err(e) => {
+                    *guard = None;
+                    return Err(PhantomError::Io(e));
+                }
+            };
 
             if n == 0 {
                 *guard = None;
@@ -562,7 +622,8 @@ impl Transport for VideoParasiteTransport {
                         .bytes_recv
                         .fetch_add(len as u64, Ordering::Relaxed);
 
-                    Ok((len, self.remote_addr))
+                    let peer = *self.peer_addr.lock().await;
+                    Ok((len, peer))
                 }
                 Err(e) => {
                     self.stats.packets_dropped.fetch_add(1, Ordering::Relaxed);

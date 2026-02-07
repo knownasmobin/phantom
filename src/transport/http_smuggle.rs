@@ -46,7 +46,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Mutex;
 
 /// HTTP smuggling desync modes
@@ -99,8 +99,12 @@ const IRAN_HOST_BYPASSES: &[&str] = &[
 pub struct HttpSmuggleTransport {
     /// TCP connection to the tunnel server
     stream: Arc<Mutex<Option<TcpStream>>>,
-    /// Remote server address
+    /// TCP listener for server mode
+    listener: Arc<Mutex<Option<TcpListener>>>,
+    /// Remote/bind address
     remote_addr: SocketAddr,
+    /// Peer address (updated on accept)
+    peer_addr: Arc<Mutex<SocketAddr>>,
     /// Smuggling mode
     mode: SmuggleMode,
     /// Host header to use (case-sensitive bypass)
@@ -126,11 +130,40 @@ struct TransportStatsInner {
 }
 
 impl HttpSmuggleTransport {
-    /// Create a new HTTP smuggling transport
+    /// Create a new HTTP smuggling transport (client mode)
     pub async fn new(remote_addr: SocketAddr) -> Result<Self> {
         Ok(Self {
             stream: Arc::new(Mutex::new(None)),
+            listener: Arc::new(Mutex::new(None)),
             remote_addr,
+            peer_addr: Arc::new(Mutex::new(remote_addr)),
+            mode: SmuggleMode::ClTe,
+            host_header: IRAN_HOST_BYPASSES[0].to_string(),
+            path: "/api/v1/sync".to_string(),
+            te_variant: 0,
+            request_id: AtomicU64::new(0),
+            stats: Arc::new(TransportStatsInner {
+                packets_sent: AtomicU64::new(0),
+                packets_recv: AtomicU64::new(0),
+                bytes_sent: AtomicU64::new(0),
+                bytes_recv: AtomicU64::new(0),
+                packets_dropped: AtomicU64::new(0),
+            }),
+            running: Arc::new(AtomicBool::new(true)),
+        })
+    }
+
+    /// Create a new server-mode transport that binds and accepts connections
+    pub async fn new_server(bind_addr: SocketAddr) -> Result<Self> {
+        let listener = TcpListener::bind(bind_addr)
+            .await
+            .map_err(|e| PhantomError::Socket(format!("HTTP smuggle bind failed: {}", e)))?;
+
+        Ok(Self {
+            stream: Arc::new(Mutex::new(None)),
+            listener: Arc::new(Mutex::new(Some(listener))),
+            remote_addr: bind_addr,
+            peer_addr: Arc::new(Mutex::new(bind_addr)),
             mode: SmuggleMode::ClTe,
             host_header: IRAN_HOST_BYPASSES[0].to_string(),
             path: "/api/v1/sync".to_string(),
@@ -167,23 +200,41 @@ impl HttpSmuggleTransport {
         self.te_variant = variant % TE_OBFUSCATIONS.len();
     }
 
-    /// Ensure TCP connection is established
-    async fn ensure_connected(&self) -> Result<()> {
-        let needs_connect = self.stream.lock().await.is_none();
-
-        if needs_connect {
-            let stream = TcpStream::connect(self.remote_addr)
-                .await
-                .map_err(|e| PhantomError::Socket(format!("HTTP connect failed: {}", e)))?;
-
-            // Set TCP_NODELAY for lower latency
-            stream
-                .set_nodelay(true)
-                .map_err(|e| PhantomError::Socket(format!("TCP_NODELAY failed: {}", e)))?;
-
-            *self.stream.lock().await = Some(stream);
+    /// Ensure a TCP connection is established.
+    /// In server mode (listener exists): accepts an incoming connection.
+    /// In client mode: connects to connect_addr.
+    async fn ensure_connected(&self, connect_addr: SocketAddr) -> Result<()> {
+        if self.stream.lock().await.is_some() {
+            return Ok(());
         }
 
+        let listener_guard = self.listener.lock().await;
+
+        // Double-check after acquiring lock
+        if self.stream.lock().await.is_some() {
+            return Ok(());
+        }
+
+        let (stream, peer) = if let Some(ref listener) = *listener_guard {
+            let (stream, peer) = listener
+                .accept()
+                .await
+                .map_err(|e| PhantomError::Socket(format!("HTTP accept failed: {}", e)))?;
+            (stream, peer)
+        } else {
+            drop(listener_guard);
+            let stream = TcpStream::connect(connect_addr)
+                .await
+                .map_err(|e| PhantomError::Socket(format!("HTTP connect failed: {}", e)))?;
+            (stream, connect_addr)
+        };
+
+        stream
+            .set_nodelay(true)
+            .map_err(|e| PhantomError::Socket(format!("TCP_NODELAY failed: {}", e)))?;
+
+        *self.peer_addr.lock().await = peer;
+        *self.stream.lock().await = Some(stream);
         Ok(())
     }
 
@@ -334,13 +385,16 @@ impl Transport for HttpSmuggleTransport {
     }
 
     async fn send(&self, data: &[u8], dst: SocketAddr) -> Result<usize> {
-        self.ensure_connected().await?;
+        self.ensure_connected(dst).await?;
 
         let request = self.build_request(data);
 
         let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
-            stream.write_all(&request).await.map_err(PhantomError::Io)?;
+            if let Err(e) = stream.write_all(&request).await {
+                *guard = None;
+                return Err(PhantomError::Io(e));
+            }
 
             self.stats.packets_sent.fetch_add(1, Ordering::Relaxed);
             self.stats
@@ -355,19 +409,23 @@ impl Transport for HttpSmuggleTransport {
     }
 
     async fn recv(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
-        self.ensure_connected().await?;
+        self.ensure_connected(self.remote_addr).await?;
 
         let mut raw_buf = [0u8; 65535];
 
         let mut guard = self.stream.lock().await;
         if let Some(ref mut stream) = *guard {
-            let n = stream.read(&mut raw_buf).await.map_err(PhantomError::Io)?;
-
-            if n == 0 {
-                // Connection closed - need to reconnect
-                *guard = None;
-                return Err(PhantomError::ConnectionReset);
-            }
+            let n = match stream.read(&mut raw_buf).await {
+                Ok(0) => {
+                    *guard = None;
+                    return Err(PhantomError::ConnectionReset);
+                }
+                Ok(n) => n,
+                Err(e) => {
+                    *guard = None;
+                    return Err(PhantomError::Io(e));
+                }
+            };
 
             match Self::parse_response(&raw_buf[..n]) {
                 Ok((data, _consumed)) => {
@@ -379,7 +437,8 @@ impl Transport for HttpSmuggleTransport {
                         .bytes_recv
                         .fetch_add(len as u64, Ordering::Relaxed);
 
-                    Ok((len, self.remote_addr))
+                    let peer = *self.peer_addr.lock().await;
+                    Ok((len, peer))
                 }
                 Err(e) => {
                     self.stats.packets_dropped.fetch_add(1, Ordering::Relaxed);
@@ -573,9 +632,12 @@ mod tests {
 
     #[test]
     fn test_cl_te_desync_structure() {
+        let addr: SocketAddr = "127.0.0.1:80".parse().unwrap();
         let transport = HttpSmuggleTransport {
             stream: Arc::new(Mutex::new(None)),
-            remote_addr: "127.0.0.1:80".parse().unwrap(),
+            listener: Arc::new(Mutex::new(None)),
+            remote_addr: addr,
+            peer_addr: Arc::new(Mutex::new(addr)),
             mode: SmuggleMode::ClTe,
             host_header: "Rubika.ir".to_string(),
             path: "/api/v1/sync".to_string(),
