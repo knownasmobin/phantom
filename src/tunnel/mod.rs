@@ -7,7 +7,7 @@
 //! - FEC (packet loss recovery)
 //! - Handshake mimicry (TLS fingerprinting)
 
-use crate::config::{Config, TransportMode};
+use crate::config::{Config, Mode, TransportMode};
 use crate::crypto::noise::SharedNoiseSession;
 use crate::crypto::{KeyPair, NoiseSession, PublicKey};
 use crate::error::{PhantomError, Result};
@@ -120,9 +120,13 @@ impl PhantomTunnel {
 
         let start = Instant::now();
 
-        // Create transport
-        let transport =
-            create_transport(self.config.transport.primary, self.config.network.bind_addr).await?;
+        // Create transport (client mode)
+        let transport = create_transport(
+            self.config.transport.primary,
+            self.config.network.bind_addr,
+            false,
+        )
+        .await?;
 
         // Generate fake TLS ClientHello for mimicry
         let client_hello = generate_client_hello(&self.config.handshake, None)?;
@@ -196,9 +200,13 @@ impl PhantomTunnel {
         *self.state.write() = TunnelState::Handshaking;
         self.running.store(true, Ordering::SeqCst);
 
-        // Create transport
-        let transport =
-            create_transport(self.config.transport.primary, self.config.network.bind_addr).await?;
+        // Create transport (server mode)
+        let transport = create_transport(
+            self.config.transport.primary,
+            self.config.network.bind_addr,
+            true,
+        )
+        .await?;
 
         *self.transport.write() = Some(transport);
 
@@ -343,7 +351,9 @@ impl PhantomTunnel {
 
     /// Switch to a different transport (transport agility)
     pub async fn switch_transport(&self, mode: TransportMode) -> Result<()> {
-        let new_transport = create_transport(mode, self.config.network.bind_addr).await?;
+        let is_server = self.config.mode == Mode::Server;
+        let new_transport =
+            create_transport(mode, self.config.network.bind_addr, is_server).await?;
 
         *self.transport.write() = Some(new_transport);
 

@@ -79,9 +79,13 @@ pub struct TransportStats {
 }
 
 /// Create a transport based on mode
+///
+/// When `is_server` is true, TCP-based transports bind a listener and accept connections.
+/// When false (client mode), they connect outbound to the destination.
 pub async fn create_transport(
     mode: TransportMode,
     bind_addr: SocketAddr,
+    is_server: bool,
 ) -> Result<Arc<dyn Transport>> {
     match mode {
         TransportMode::FakeTcp => {
@@ -98,7 +102,11 @@ pub async fn create_transport(
         }
         TransportMode::Dns => {
             // DNS tunnel requires a tunnel domain - use default
-            let transport = DnsTunnelTransport::new(bind_addr, "t.phantom.local".into()).await?;
+            let transport = if is_server {
+                DnsTunnelTransport::new_server(bind_addr, "t.phantom.local".into()).await?
+            } else {
+                DnsTunnelTransport::new(bind_addr, "t.phantom.local".into()).await?
+            };
             Ok(Arc::new(transport))
         }
         TransportMode::QuicMasq => {
@@ -110,16 +118,28 @@ pub async fn create_transport(
             Ok(Arc::new(transport))
         }
         TransportMode::HttpSmuggle => {
-            let transport = HttpSmuggleTransport::new(bind_addr).await?;
+            let transport = if is_server {
+                HttpSmuggleTransport::new_server(bind_addr).await?
+            } else {
+                HttpSmuggleTransport::new(bind_addr).await?
+            };
             Ok(Arc::new(transport))
         }
         TransportMode::VideoParasite => {
-            let transport = VideoParasiteTransport::new(bind_addr).await?;
+            let transport = if is_server {
+                VideoParasiteTransport::new_server(bind_addr).await?
+            } else {
+                VideoParasiteTransport::new(bind_addr).await?
+            };
             Ok(Arc::new(transport))
         }
         TransportMode::ProtoMorph => {
             // ProtoMorph requires a shared seed - use random for factory default
-            let transport = ProtoMorphTransport::new_random(bind_addr).await?;
+            let transport = if is_server {
+                ProtoMorphTransport::new_random_server(bind_addr).await?
+            } else {
+                ProtoMorphTransport::new_random(bind_addr).await?
+            };
             Ok(Arc::new(transport))
         }
         TransportMode::Tcp => {
